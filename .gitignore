@@ -3,5 +3,5 @@ __pycache__/
 api_service.log
 embedding_process.log
 rag_retriever.log
-uploads/
 config.yaml
+.env

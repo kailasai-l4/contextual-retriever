@@ -1,6 +1,4 @@
 import os
-import yaml
-import json
 import logging
 from typing import Dict, Any, Optional
 
@@ -8,7 +6,7 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger("config")
 
 class Config:
-    """Configuration manager for RAG Content Retriever"""
+    """Configuration manager for RAG Content Retriever that uses only environment variables"""
 
     # Default values
     DEFAULTS = {
@@ -19,10 +17,10 @@ class Config:
         },
         "gemini": {
             "api_key": "",
-            "model": "gemini-1.5-flash-latest"  # Updated default to match what's used in code
+            "model": "gemini-2.0-flash-001"
         },
         "qdrant": {
-            "url": "localhost",
+            "url": "qdrant",
             "port": 6333,
             "collection_name": "content_library"
         },
@@ -31,7 +29,7 @@ class Config:
             "overlap_tokens": 100
         },
         "embedding": {
-            "batch_size": 10,
+            "batch_size": 100,
             "checkpoint_dir": "embedding_checkpoints"
         },
         "retrieval": {
@@ -40,57 +38,43 @@ class Config:
         },
         "logging": {
             "level": "INFO",
-            "file": "rag_retriever.log",
-            "embedding_log": "embedding_process.log"
+            "file": "logs/rag_retriever.log",
+            "embedding_log": "logs/embedding_process.log"
         },
         "api": {
-            "api_key": "YOUR_API_KEY_HERE"
+            "api_key": ""
         }
     }
 
     def __init__(self, config_path: Optional[str] = None):
         """
-        Initialize configuration manager
+        Initialize configuration manager using environment variables
 
         Args:
-            config_path: Path to configuration file (YAML or JSON)
+            config_path: Ignored parameter kept for compatibility
         """
+        # Start with default configuration
         self.config = self.DEFAULTS.copy()
-
-        # Try to load configuration from file
-        if config_path:
-            self._load_config(config_path)
-        else:
-            # Look for default config locations
-            potential_paths = [
-                "./config.yaml",
-                "./config.yml",
-                "./config.json",
-                os.path.expanduser("~/.rag_retriever/config.yaml"),
-                os.path.expanduser("~/.config/rag_retriever/config.yaml")
-            ]
-
-            for path in potential_paths:
-                if os.path.exists(path):
-                    self._load_config(path)
-                    break
-
-        # Override with environment variables
-        self._override_from_env()
-
+        
+        # Load all configuration from environment variables
+        self._load_from_env()
+        
         # Validate critical configuration
         self._validate_config()
+        
+        # Log that we're using environment variables only
+        logger.info("Configuration loaded from environment variables")
 
     def _validate_config(self):
         """Validate critical configuration settings"""
         # Check API keys (don't log actual keys)
         jina_key = self.get('jina', 'api_key')
         if not jina_key:
-            logger.warning("No Jina API key provided - will need to be provided via environment variable or command line")
+            logger.warning("No Jina API key provided in environment variables")
 
         gemini_key = self.get('gemini', 'api_key')
         if not gemini_key:
-            logger.warning("No Gemini API key provided - will need to be provided via environment variable or command line")
+            logger.warning("No Gemini API key provided in environment variables")
 
         # Validate Qdrant URL and port
         qdrant_url = self.get('qdrant', 'url')
@@ -98,46 +82,43 @@ class Config:
             logger.warning("No Qdrant URL provided - using default: localhost")
             self.config['qdrant']['url'] = 'localhost'
 
-    def _load_config(self, config_path: str):
-        """Load configuration from file"""
-        try:
-            file_ext = os.path.splitext(config_path)[1].lower()
-            with open(config_path, 'r') as f:
-                if file_ext in ['.yaml', '.yml']:
-                    file_config = yaml.safe_load(f)
-                elif file_ext == '.json':
-                    file_config = json.load(f)
-                else:
-                    logger.warning(f"Unsupported config file format: {file_ext}")
-                    return
-
-                # Update config with loaded values
-                self._update_nested_dict(self.config, file_config)
-                logger.info(f"Loaded configuration from {config_path}")
-
-        except Exception as e:
-            logger.error(f"Error loading configuration from {config_path}: {str(e)}")
-
-    def _update_nested_dict(self, base_dict: Dict, update_dict: Dict):
-        """Update nested dictionary recursively"""
-        for key, value in update_dict.items():
-            if isinstance(value, dict) and key in base_dict and isinstance(base_dict[key], dict):
-                self._update_nested_dict(base_dict[key], value)
-            else:
-                base_dict[key] = value
-
-    def _override_from_env(self):
-        """Override config values from environment variables"""
+    def _load_from_env(self):
+        """Load all configuration from environment variables"""
         # Map of environment variables to config paths
         env_mappings = {
+            # API Keys
             "JINA_API_KEY": ["jina", "api_key"],
             "GEMINI_API_KEY": ["gemini", "api_key"],
+            "API_KEY": ["api", "api_key"],
+            
+            # Jina Configuration
+            "JINA_EMBEDDING_MODEL": ["jina", "embedding_model"],
+            "JINA_RERANKER_MODEL": ["jina", "reranker_model"],
+            
+            # Gemini Configuration
+            "GEMINI_MODEL": ["gemini", "model"],
+            
+            # Qdrant Configuration
             "QDRANT_URL": ["qdrant", "url"],
             "QDRANT_PORT": ["qdrant", "port"],
-            "QDRANT_COLLECTION_NAME": ["qdrant", "collection_name"],
+            "COLLECTION_NAME": ["qdrant", "collection_name"],
+            
+            # Chunking Configuration
             "MAX_CHUNK_TOKENS": ["chunking", "max_chunk_tokens"],
+            "OVERLAP_TOKENS": ["chunking", "overlap_tokens"],
+            
+            # Embedding Configuration
             "EMBEDDING_BATCH_SIZE": ["embedding", "batch_size"],
-            "LOG_LEVEL": ["logging", "level"]
+            "CHECKPOINT_DIR": ["embedding", "checkpoint_dir"],
+            
+            # Retrieval Configuration
+            "MAX_CONSOLIDATED_TOKENS": ["retrieval", "max_consolidated_tokens"],
+            "DEFAULT_RESULT_LIMIT": ["retrieval", "default_result_limit"],
+            
+            # Logging Configuration
+            "LOG_LEVEL": ["logging", "level"],
+            "LOG_FILE": ["logging", "file"],
+            "EMBEDDING_LOG_FILE": ["logging", "embedding_log"]
         }
 
         for env_var, config_path in env_mappings.items():
@@ -187,35 +168,6 @@ class Config:
         """Allow dictionary-like access to top-level config sections"""
         return self.config.get(key, {})
 
-    def create_default_config_file(self, output_path: str = "config.yaml"):
-        """
-        Create a default configuration file with placeholders
-
-        Args:
-            output_path: Path to write the configuration file
-        """
-        # Create a sanitized copy with empty API keys
-        sanitized = self.DEFAULTS.copy()
-        sanitized["jina"]["api_key"] = "YOUR_JINA_API_KEY_HERE"
-        sanitized["gemini"]["api_key"] = "YOUR_GEMINI_API_KEY_HERE"
-
-        try:
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-
-            # Write the config file
-            with open(output_path, 'w') as f:
-                if output_path.endswith('.json'):
-                    json.dump(sanitized, f, indent=2)
-                else:
-                    yaml.dump(sanitized, f, default_flow_style=False, sort_keys=False)
-
-            print(f"Created default configuration file: {output_path}")
-
-        except Exception as e:
-            logger.error(f"Error creating default config file: {str(e)}")
-            print(f"Error creating default config file: {str(e)}")
-
 # Global config instance
 _config_instance = None
 
@@ -224,22 +176,12 @@ def get_config(config_path: Optional[str] = None) -> Config:
     Get or create the global config instance
 
     Args:
-        config_path: Optional path to config file
+        config_path: Ignored parameter kept for compatibility
 
     Returns:
         Config instance
     """
     global _config_instance
     if _config_instance is None:
-        _config_instance = Config(config_path)
+        _config_instance = Config()
     return _config_instance
-
-# Example usage
-if __name__ == "__main__":
-    # Create a default config file
-    config = Config()
-    config.create_default_config_file()
-
-    # Access config values
-    print(f"Qdrant URL: {config.get('qdrant', 'url')}")
-    print(f"Max chunk tokens: {config.get('chunking', 'max_chunk_tokens')}")

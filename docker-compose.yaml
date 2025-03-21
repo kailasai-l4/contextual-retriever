@@ -6,20 +6,20 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./:/app
       - ./data:/app/data
       - ./uploads:/app/uploads
       - ./embedding_checkpoints:/app/embedding_checkpoints
+      - ./logs:/app/logs
+    env_file:
+      - .env
     environment:
-      - JINA_API_KEY=${JINA_API_KEY}
-      - API_KEY=${API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - RAG_API_KEY=${RAG_API_KEY}
       - QDRANT_URL=qdrant
       - QDRANT_PORT=6333
     depends_on:
       - qdrant
     restart: unless-stopped
+    networks:
+      - rag-network
 
   qdrant:
     image: qdrant/qdrant
@@ -27,8 +27,11 @@ services:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - qdrant_data:/qdrant/storage
+      - ./qdrant_data:/qdrant/storage
     restart: unless-stopped
+    networks:
+      - rag-network
 
-volumes:
-  qdrant_data:
+networks:
+  rag-network:
+    driver: bridge
