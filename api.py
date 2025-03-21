@@ -74,35 +74,35 @@ class ApiResponse(BaseModel):
 def get_api_components():
     """Creates and returns processor and retriever components with configuration"""
     config = get_config()
-    
+
     # Get API keys from environment or config
     jina_key = os.environ.get("JINA_API_KEY") or config.get('jina', 'api_key')
     gemini_key = os.environ.get("GEMINI_API_KEY") or config.get('gemini', 'api_key')
     qdrant_url = config.get('qdrant', 'url')
     qdrant_port = config.get('qdrant', 'port')
-    
+
     # Check for required API keys
     if not jina_key:
         raise ValueError("Jina API key not provided in config or environment")
-        
+
     if not gemini_key:
         raise ValueError("Gemini API key not provided in config or environment")
-    
+
     # Initialize processor and retriever
     processor = ContentProcessor(
         jina_api_key=jina_key,
         gemini_api_key=gemini_key,
-        qdrant_url=qdrant_url, 
+        qdrant_url=qdrant_url,
         qdrant_port=qdrant_port
     )
-    
+
     retriever = AdvancedRetriever(
         jina_api_key=jina_key,
         gemini_api_key=gemini_key,
         qdrant_url=qdrant_url,
         qdrant_port=qdrant_port
     )
-    
+
     return processor, retriever
 
 API_KEY = os.environ.get("API_KEY") or get_config().get('api', 'api_key')
@@ -137,13 +137,13 @@ async def root(api_key: str = Depends(get_api_key)):
 async def search_content(request: SearchRequest, api_key: str = Depends(get_api_key)):
     """
     Search for content based on the provided query
-    
+
     Parameters:
     - query: Search query
     - limit: Maximum number of results to return
     - use_optimized_retrieval: Whether to use optimized retrieval strategy
     - filters: Filter criteria (e.g., {\"source_type\": \".md\"})
-    
+
     Returns:
     - success: Whether the request was successful
     - data: Search results
@@ -151,10 +151,10 @@ async def search_content(request: SearchRequest, api_key: str = Depends(get_api_
     - duration_ms: Request duration in milliseconds
     """
     start_time = time.time()
-    
+
     try:
         _, retriever = get_api_components()
-        
+
         if request.filters:
             results = retriever.filter_search(
                 query=request.query,
@@ -168,7 +168,7 @@ async def search_content(request: SearchRequest, api_key: str = Depends(get_api_
                 limit=request.limit,
                 use_optimized_retrieval=request.use_optimized_retrieval
             )
-        
+
         duration_ms = (time.time() - start_time) * 1000
         return ApiResponse(
             success=True,
@@ -180,7 +180,7 @@ async def search_content(request: SearchRequest, api_key: str = Depends(get_api_
             message=f"Found {len(results)} results",
             duration_ms=duration_ms
         )
-    
+
     except Exception as e:
         logger.error(f"Error during search: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -189,52 +189,52 @@ async def search_content(request: SearchRequest, api_key: str = Depends(get_api_
 async def process_documents(request: ProcessRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
     """
     Process documents into the vector database
-    
+
     This endpoint starts document processing in the background and returns immediately.
-    
+
     Parameters:
     - directory_path: Path to directory containing documents
     - recursive: Process directories recursively
     - file_types: File extensions to process (e.g., [".md", ".json"])
-    
+
     Returns:
     - success: Whether the request was started successfully
     - data: Request details
     - message: Additional information
     """
     start_time = time.time()
-    
+
     try:
         processor, _ = get_api_components()
-        
+
         # Define the background task
         def process_task(path, recursive, file_types):
             try:
                 logger.info(f"Starting background processing of {path}")
-                
+
                 # Convert file types to proper format
                 if file_types:
                     file_types = [ft if ft.startswith('.') else f'.{ft}' for ft in file_types]
-                
+
                 # Process the directory
                 processor.process_directory(
                     directory_path=path,
                     recursive=recursive,
                     file_types=file_types
                 )
-                
+
                 logger.info(f"Completed background processing of {path}")
             except Exception as e:
                 logger.error(f"Error during background processing: {str(e)}", exc_info=True)
-        
+
         # Add the task to background tasks
         background_tasks.add_task(
-            process_task, 
-            request.directory_path, 
-            request.recursive, 
+            process_task,
+            request.directory_path,
+            request.recursive,
             request.file_types
         )
-        
+
         duration_ms = (time.time() - start_time) * 1000
         return ApiResponse(
             success=True,
@@ -246,7 +246,7 @@ async def process_documents(request: ProcessRequest, background_tasks: Backgroun
             message="Document processing started in the background",
             duration_ms=duration_ms
         )
-    
+
     except Exception as e:
         logger.error(f"Error starting document processing: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -255,25 +255,25 @@ async def process_documents(request: ProcessRequest, background_tasks: Backgroun
 async def get_stats(api_key: str = Depends(get_api_key)):
     """
     Get statistics about the vector database
-    
+
     Returns:
     - success: Whether the request was successful
     - data: Database statistics
     - duration_ms: Request duration in milliseconds
     """
     start_time = time.time()
-    
+
     try:
         processor, _ = get_api_components()
         stats = processor.get_collection_stats()
-        
+
         duration_ms = (time.time() - start_time) * 1000
         return ApiResponse(
             success=True,
             data=stats,
             duration_ms=duration_ms
         )
-    
+
     except Exception as e:
         logger.error(f"Error getting stats: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -282,21 +282,21 @@ async def get_stats(api_key: str = Depends(get_api_key)):
 async def get_source_content(source_id: str, api_key: str = Depends(get_api_key)):
     """
     Get all content from a specific source
-    
+
     Parameters:
     - source_id: Source ID to retrieve
-    
+
     Returns:
     - success: Whether the request was successful
     - data: Source content
     - duration_ms: Request duration in milliseconds
     """
     start_time = time.time()
-    
+
     try:
         _, retriever = get_api_components()
         chunks = retriever.get_source_content(source_id)
-        
+
         duration_ms = (time.time() - start_time) * 1000
         return ApiResponse(
             success=True,
@@ -307,7 +307,7 @@ async def get_source_content(source_id: str, api_key: str = Depends(get_api_key)
             },
             duration_ms=duration_ms
         )
-    
+
     except Exception as e:
         logger.error(f"Error getting source content: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -316,30 +316,30 @@ async def get_source_content(source_id: str, api_key: str = Depends(get_api_key)
 async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...), process_now: bool = Query(True), api_key: str = Depends(get_api_key)):
     """
     Upload and optionally process a file
-    
+
     Parameters:
     - file: File to upload
     - process_now: Whether to process the file immediately
-    
+
     Returns:
     - success: Whether the upload was successful
     - data: Upload details
     - message: Additional information
     """
     start_time = time.time()
-    
+
     try:
         processor, _ = get_api_components()
-        
+
         # Create uploads directory if it doesn't exist
         upload_dir = "uploads"
         os.makedirs(upload_dir, exist_ok=True)
-        
+
         # Save the file
         file_path = os.path.join(upload_dir, file.filename)
         with open(file_path, "wb") as f:
             f.write(await file.read())
-        
+
         # Process the file if requested
         if process_now:
             def process_file_task(path):
@@ -349,12 +349,12 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
                     logger.info(f"Completed processing of uploaded file: {path}")
                 except Exception as e:
                     logger.error(f"Error processing uploaded file: {str(e)}", exc_info=True)
-            
+
             background_tasks.add_task(process_file_task, file_path)
             message = "File uploaded and processing started in the background"
         else:
             message = "File uploaded successfully"
-        
+
         duration_ms = (time.time() - start_time) * 1000
         return ApiResponse(
             success=True,
@@ -368,7 +368,7 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
             message=message,
             duration_ms=duration_ms
         )
-    
+
     except Exception as e:
         logger.error(f"Error uploading file: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -377,29 +377,29 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
 async def optimized_retrieval(topic: str = Body(...), limit: int = Body(20), api_key: str = Depends(get_api_key)):
     """
     Retrieve optimized content for a specific topic
-    
+
     Parameters:
     - topic: Topic to retrieve content for
     - limit: Maximum number of chunks to retrieve
-    
+
     Returns:
     - success: Whether the request was successful
     - data: Optimized content
     - duration_ms: Request duration in milliseconds
     """
     start_time = time.time()
-    
+
     try:
         _, retriever = get_api_components()
         results = retriever.retrieve_optimized_content(topic, limit)
-        
+
         duration_ms = (time.time() - start_time) * 1000
         return ApiResponse(
             success=True,
             data=results,
             duration_ms=duration_ms
         )
-    
+
     except Exception as e:
         logger.error(f"Error during optimized retrieval: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -414,7 +414,7 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=8000, help='Port to bind the server to')
     parser.add_argument('--reload', action='store_true', help='Enable auto-reload for development')
     args = parser.parse_args()
-    
+
     # Start the server
     logger.info(f"Starting API server at http://{args.host}:{args.port}")
     uvicorn.run("api:app", host=args.host, port=args.port, reload=args.reload)

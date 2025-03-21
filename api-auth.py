@@ -15,15 +15,15 @@ def get_api_keys():
     # 1. Comma-separated list of keys in RAG_API_KEYS env var
     # 2. Single key in RAG_API_KEY env var
     # 3. Default key for development only
-    
+
     keys_list = os.environ.get("RAG_API_KEYS", "")
     if keys_list:
         return [key.strip() for key in keys_list.split(",")]
-    
+
     single_key = os.environ.get("RAG_API_KEY", "")
     if single_key:
         return [single_key]
-    
+
     # Development fallback (not recommended for production)
     return ["dev_api_key_replace_in_production"]
 
@@ -35,16 +35,16 @@ async def get_api_key(api_key_header: str = Security(api_key_header)) -> str:
             detail="API key missing",
             headers={"WWW-Authenticate": "ApiKey"}
         )
-    
+
     valid_keys = get_api_keys()
-    
+
     if api_key_header not in valid_keys:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
             headers={"WWW-Authenticate": "ApiKey"}
         )
-    
+
     return api_key_header
 
 # To use this in an endpoint, add the dependency:
