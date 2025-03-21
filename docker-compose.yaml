@@ -1,5 +1,5 @@
 services:
-  contextual_retriever_api:
+  api:
     build: .
     ports:
       - "8333:8000"
