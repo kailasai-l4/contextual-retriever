@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""
+RAG Content Retriever API
+-------------------------
+A REST API service exposing the RAG Content Retriever functionality.
+"""
+
+import os
+import sys
+import time
+import json
+from typing import Dict, List, Optional, Any
+import logging
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, File, UploadFile, Body, Query, Header
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+import uvicorn
+
+# Import our modules
+from config import get_config
+from content_processor import ContentProcessor
+from advanced_retriever import AdvancedRetriever
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("api_service.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("rag_api")
+
+# Initialize the API
+app = FastAPI(
+    title="RAG Content Retriever API",
+    description="API for retrieving and processing content using RAG (Retrieval Augmented Generation) techniques",
+    version="1.0.0"
+)
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Modify for production to specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Models for request/response ---
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., description="Search query")
+    limit: Optional[int] = Field(20, description="Maximum number of results to return")
+    use_optimized_retrieval: Optional[bool] = Field(True, description="Whether to use optimized retrieval strategy")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Filter criteria (e.g., {\"source_type\": \".md\"})")
+
+class ProcessRequest(BaseModel):
+    directory_path: str = Field(..., description="Path to directory containing documents")
+    recursive: Optional[bool] = Field(True, description="Process directories recursively")
+    file_types: Optional[List[str]] = Field(None, description="File extensions to process (e.g., [\".md\", \".json\"])")
+
+class ApiResponse(BaseModel):
+    success: bool
+    data: Any
+    message: Optional[str] = None
+    duration_ms: float
+
+# --- Dependencies ---
+
+def get_api_components():
+    """Creates and returns processor and retriever components with configuration"""
+    config = get_config()
+    
+    # Get API keys from environment or config
+    jina_key = os.environ.get("JINA_API_KEY") or config.get('jina', 'api_key')
+    gemini_key = os.environ.get("GEMINI_API_KEY") or config.get('gemini', 'api_key')
+    qdrant_url = config.get('qdrant', 'url')
+    qdrant_port = config.get('qdrant', 'port')
+    
+    # Check for required API keys
+    if not jina_key:
+        raise ValueError("Jina API key not provided in config or environment")
+        
+    if not gemini_key:
+        raise ValueError("Gemini API key not provided in config or environment")
+    
+    # Initialize processor and retriever
+    processor = ContentProcessor(
+        jina_api_key=jina_key,
+        gemini_api_key=gemini_key,
+        qdrant_url=qdrant_url, 
+        qdrant_port=qdrant_port
+    )
+    
+    retriever = AdvancedRetriever(
+        jina_api_key=jina_key,
+        gemini_api_key=gemini_key,
+        qdrant_url=qdrant_url,
+        qdrant_port=qdrant_port
+    )
+    
+    return processor, retriever
+
+# --- API Endpoints ---
+
+@app.get("/")
+async def root():
+    """Root endpoint providing information about the API"""
+    return {
+        "name": "RAG Content Retriever API",
+        "version": "1.0.0",
+        "description": "API for retrieving and processing content using RAG techniques",
+        "endpoints": [
+            {"path": "/search", "method": "POST", "description": "Search for content"},
+            {"path": "/process", "method": "POST", "description": "Process documents into vector database"},
+            {"path": "/stats", "method": "GET", "description": "Get statistics about the vector database"},
+            {"path": "/sources/{source_id}", "method": "GET", "description": "Get all content from a specific source"}
+        ]
+    }
+
+@app.post("/search", response_model=ApiResponse)
+async def search_content(request: SearchRequest):
+    """
+    Search for content based on the provided query
+    
+    Parameters:
+    - query: Search query
+    - limit: Maximum number of results to return
+    - use_optimized_retrieval: Whether to use optimized retrieval strategy
+    - filters: Filter criteria (e.g., {"source_type": ".md"})
+    
+    Returns:
+    - success: Whether the request was successful
+    - data: Search results
+    - message: Additional information
+    - duration_ms: Request duration in milliseconds
+    """
+    start_time = time.time()
+    
+    try:
+        _, retriever = get_api_components()
+        
+        if request.filters:
+            results = retriever.filter_search(
+                query=request.query,
+                filters=request.filters,
+                limit=request.limit,
+                use_optimized_retrieval=request.use_optimized_retrieval
+            )
+        else:
+            results = retriever.search(
+                query=request.query,
+                limit=request.limit,
+                use_optimized_retrieval=request.use_optimized_retrieval
+            )
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data={
+                "query": request.query,
+                "count": len(results),
+                "results": results
+            },
+            message=f"Found {len(results)} results",
+            duration_ms=duration_ms
+        )
+    
+    except Exception as e:
+        logger.error(f"Error during search: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/process", response_model=ApiResponse)
+async def process_documents(request: ProcessRequest, background_tasks: BackgroundTasks):
+    """
+    Process documents into the vector database
+    
+    This endpoint starts document processing in the background and returns immediately.
+    
+    Parameters:
+    - directory_path: Path to directory containing documents
+    - recursive: Process directories recursively
+    - file_types: File extensions to process (e.g., [".md", ".json"])
+    
+    Returns:
+    - success: Whether the request was started successfully
+    - data: Request details
+    - message: Additional information
+    """
+    start_time = time.time()
+    
+    try:
+        processor, _ = get_api_components()
+        
+        # Define the background task
+        def process_task(path, recursive, file_types):
+            try:
+                logger.info(f"Starting background processing of {path}")
+                
+                # Convert file types to proper format
+                if file_types:
+                    file_types = [ft if ft.startswith('.') else f'.{ft}' for ft in file_types]
+                
+                # Process the directory
+                processor.process_directory(
+                    directory_path=path,
+                    recursive=recursive,
+                    file_types=file_types
+                )
+                
+                logger.info(f"Completed background processing of {path}")
+            except Exception as e:
+                logger.error(f"Error during background processing: {str(e)}", exc_info=True)
+        
+        # Add the task to background tasks
+        background_tasks.add_task(
+            process_task, 
+            request.directory_path, 
+            request.recursive, 
+            request.file_types
+        )
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data={
+                "directory_path": request.directory_path,
+                "recursive": request.recursive,
+                "file_types": request.file_types
+            },
+            message="Document processing started in the background",
+            duration_ms=duration_ms
+        )
+    
+    except Exception as e:
+        logger.error(f"Error starting document processing: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/stats", response_model=ApiResponse)
+async def get_stats():
+    """
+    Get statistics about the vector database
+    
+    Returns:
+    - success: Whether the request was successful
+    - data: Database statistics
+    - duration_ms: Request duration in milliseconds
+    """
+    start_time = time.time()
+    
+    try:
+        processor, _ = get_api_components()
+        stats = processor.get_collection_stats()
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data=stats,
+            duration_ms=duration_ms
+        )
+    
+    except Exception as e:
+        logger.error(f"Error getting stats: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sources/{source_id}", response_model=ApiResponse)
+async def get_source_content(source_id: str):
+    """
+    Get all content from a specific source
+    
+    Parameters:
+    - source_id: Source ID to retrieve
+    
+    Returns:
+    - success: Whether the request was successful
+    - data: Source content
+    - duration_ms: Request duration in milliseconds
+    """
+    start_time = time.time()
+    
+    try:
+        _, retriever = get_api_components()
+        chunks = retriever.get_source_content(source_id)
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data={
+                "source_id": source_id,
+                "chunks": chunks,
+                "count": len(chunks)
+            },
+            duration_ms=duration_ms
+        )
+    
+    except Exception as e:
+        logger.error(f"Error getting source content: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/upload", response_model=ApiResponse)
+async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...), process_now: bool = Query(True)):
+    """
+    Upload and optionally process a file
+    
+    Parameters:
+    - file: File to upload
+    - process_now: Whether to process the file immediately
+    
+    Returns:
+    - success: Whether the upload was successful
+    - data: Upload details
+    - message: Additional information
+    """
+    start_time = time.time()
+    
+    try:
+        processor, _ = get_api_components()
+        
+        # Create uploads directory if it doesn't exist
+        upload_dir = "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Save the file
+        file_path = os.path.join(upload_dir, file.filename)
+        with open(file_path, "wb") as f:
+            f.write(await file.read())
+        
+        # Process the file if requested
+        if process_now:
+            def process_file_task(path):
+                try:
+                    logger.info(f"Processing uploaded file: {path}")
+                    processor.process_file(path)
+                    logger.info(f"Completed processing of uploaded file: {path}")
+                except Exception as e:
+                    logger.error(f"Error processing uploaded file: {str(e)}", exc_info=True)
+            
+            background_tasks.add_task(process_file_task, file_path)
+            message = "File uploaded and processing started in the background"
+        else:
+            message = "File uploaded successfully"
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data={
+                "filename": file.filename,
+                "path": file_path,
+                "size": file.size,
+                "content_type": file.content_type,
+                "processed": process_now
+            },
+            message=message,
+            duration_ms=duration_ms
+        )
+    
+    except Exception as e:
+        logger.error(f"Error uploading file: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Advanced Endpoints ---
+
+@app.post("/optimized-retrieval", response_model=ApiResponse)
+async def optimized_retrieval(topic: str = Body(...), limit: int = Body(20)):
+    """
+    Retrieve optimized content for a specific topic
+    
+    Parameters:
+    - topic: Topic to retrieve content for
+    - limit: Maximum number of chunks to retrieve
+    
+    Returns:
+    - success: Whether the request was successful
+    - data: Optimized content
+    - duration_ms: Request duration in milliseconds
+    """
+    start_time = time.time()
+    
+    try:
+        _, retriever = get_api_components()
+        results = retriever.retrieve_optimized_content(topic, limit)
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data=results,
+            duration_ms=duration_ms
+        )
+    
+    except Exception as e:
+        logger.error(f"Error during optimized retrieval: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Server ---
+
+if __name__ == "__main__":
+    # Parse command line arguments
+    import argparse
+    parser = argparse.ArgumentParser(description='RAG Content Retriever API')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind the server to')
+    parser.add_argument('--port', type=int, default=8000, help='Port to bind the server to')
+    parser.add_argument('--reload', action='store_true', help='Enable auto-reload for development')
+    args = parser.parse_args()
+    
+    # Start the server
+    logger.info(f"Starting API server at http://{args.host}:{args.port}")
+    uvicorn.run("api:app", host=args.host, port=args.port, reload=args.reload)
