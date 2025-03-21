@@ -7,3 +7,4 @@ rag_retriever.log
 config.yaml
 .env
 .config.yaml.ref
+.pkl
