@@ -1,5 +1,3 @@
-version: '3'
-
 services:
   contextual_retriever_api:
     build: .
