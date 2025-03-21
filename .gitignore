@@ -1,4 +1,5 @@
 contextual-documents/
+embedding_checkpoints/
 __pycache__/
 api_service.log
 embedding_process.log
