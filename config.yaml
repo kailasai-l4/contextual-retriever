@@ -58,3 +58,8 @@ logging:
   file: "rag_retriever.log"
   # Embedding process log file
   embedding_log: "embedding_process.log"
+
+# API Configuration
+api:
+  # Your API key (recommended: use API_KEY environment variable instead)
+  api_key: "581e2e5fc4ed201bca765731798f4834f8424a129b8a5a4722c292cf3a13cfe8"

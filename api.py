@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
+from fastapi.security import APIKeyHeader
 
 # Import our modules
 from config import get_config
@@ -104,10 +105,21 @@ def get_api_components():
     
     return processor, retriever
 
+API_KEY = os.environ.get("API_KEY") or get_config().get('api', 'api_key')
+API_KEY_NAME = "X-API-Key"
+
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=True)
+
+async def get_api_key(api_key_header: str = Depends(api_key_header)):
+    if api_key_header == API_KEY:
+        return api_key_header
+    else:
+        raise HTTPException(status_code=403, detail="Could not validate credentials")
+
 # --- API Endpoints ---
 
 @app.get("/")
-async def root():
+async def root(api_key: str = Depends(get_api_key)):
     """Root endpoint providing information about the API"""
     return {
         "name": "RAG Content Retriever API",
@@ -122,7 +134,7 @@ async def root():
     }
 
 @app.post("/search", response_model=ApiResponse)
-async def search_content(request: SearchRequest):
+async def search_content(request: SearchRequest, api_key: str = Depends(get_api_key)):
     """
     Search for content based on the provided query
     
@@ -130,7 +142,7 @@ async def search_content(request: SearchRequest):
     - query: Search query
     - limit: Maximum number of results to return
     - use_optimized_retrieval: Whether to use optimized retrieval strategy
-    - filters: Filter criteria (e.g., {"source_type": ".md"})
+    - filters: Filter criteria (e.g., {\"source_type\": \".md\"})
     
     Returns:
     - success: Whether the request was successful
@@ -174,7 +186,7 @@ async def search_content(request: SearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/process", response_model=ApiResponse)
-async def process_documents(request: ProcessRequest, background_tasks: BackgroundTasks):
+async def process_documents(request: ProcessRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
     """
     Process documents into the vector database
     
@@ -240,7 +252,7 @@ async def process_documents(request: ProcessRequest, background_tasks: Backgroun
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/stats", response_model=ApiResponse)
-async def get_stats():
+async def get_stats(api_key: str = Depends(get_api_key)):
     """
     Get statistics about the vector database
     
@@ -267,7 +279,7 @@ async def get_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sources/{source_id}", response_model=ApiResponse)
-async def get_source_content(source_id: str):
+async def get_source_content(source_id: str, api_key: str = Depends(get_api_key)):
     """
     Get all content from a specific source
     
@@ -301,7 +313,7 @@ async def get_source_content(source_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload", response_model=ApiResponse)
-async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...), process_now: bool = Query(True)):
+async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...), process_now: bool = Query(True), api_key: str = Depends(get_api_key)):
     """
     Upload and optionally process a file
     
@@ -361,10 +373,8 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
         logger.error(f"Error uploading file: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- Advanced Endpoints ---
-
-@app.post("/optimized-retrieval", response_model=ApiResponse)
-async def optimized_retrieval(topic: str = Body(...), limit: int = Body(20)):
+@app.post("/optimized_retrieval", response_model=ApiResponse)
+async def optimized_retrieval(topic: str = Body(...), limit: int = Body(20), api_key: str = Depends(get_api_key)):
     """
     Retrieve optimized content for a specific topic
     

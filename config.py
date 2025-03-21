@@ -42,6 +42,9 @@ class Config:
             "level": "INFO",
             "file": "rag_retriever.log",
             "embedding_log": "embedding_process.log"
+        },
+        "api": {
+            "api_key": "YOUR_API_KEY_HERE"
         }
     }
     
