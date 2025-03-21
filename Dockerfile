@@ -30,7 +30,7 @@ ENV QDRANT_URL="qdrant" \
     QDRANT_PORT=6333
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=86400s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -f -H "X-API-Key: ${API_KEY}" http://localhost:8000/ || exit 1
 
 # Run the API server
