@@ -1,10 +1,10 @@
 version: '3'
 
 services:
-  api:
+  contextual_retriever_api:
     build: .
     ports:
-      - "8000:8000"
+      - "8333:8000"
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
