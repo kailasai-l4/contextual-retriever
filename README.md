@@ -10,6 +10,9 @@ A comprehensive tool for processing documents into vector embeddings and retriev
 - Query expansion and reranking for improved retrieval
 - Support for document filtering and diverse source retrieval
 - Stateful processing with checkpoint support
+- Enhanced statistics and dashboard visualization
+- Docker support for easy deployment and scalability
+- RESTful API with robust authentication
 
 ## Installation
 
@@ -80,11 +83,31 @@ python main.py search --query "Your search query" --filter "source_type=.md" "ke
 python main.py search --query "Your search query" --output results.json
 ```
 
-### Other Commands
+### REST API
+
+The system includes a FastAPI-based REST API for integration with other services:
+
+```bash
+# Start the API server
+python api.py 
+
+# Or with custom host/port
+python api.py --host 0.0.0.0 --port 8080
+```
+
+See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
+
+### System Statistics
 
 ```bash
 # Show database statistics
 python main.py stats
+
+# Show detailed stats with visualization
+python test_enhanced_stats.py
+
+# Run the comprehensive dashboard view
+python simple_dashboard_test.py
 
 # Clear database (requires confirmation)
 python main.py clear --confirm
@@ -94,6 +117,18 @@ python main.py reset --confirm
 
 # Test API connections
 python main.py test
+```
+
+### Docker Deployment
+
+The system can be deployed using Docker for easier management:
+
+```bash
+# Build the Docker image
+docker build -t rag-content-retriever .
+
+# Run the container
+docker run -p 8000:8000 -v /path/to/data:/app/data -v /path/to/.env:/app/.env rag-content-retriever
 ```
 
 ## How It Works

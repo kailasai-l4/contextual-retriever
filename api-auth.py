@@ -2,6 +2,10 @@ from fastapi import Depends, HTTPException, Security, status
 from fastapi.security.api_key import APIKeyHeader
 import os
 from typing import Optional
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
 
 # Create API key header schema
 API_KEY_NAME = "X-API-Key"

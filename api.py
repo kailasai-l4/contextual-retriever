@@ -17,6 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 from fastapi.security import APIKeyHeader
+from dotenv import load_dotenv
+from datetime import datetime
+
+# Load .env file
+load_dotenv()
 
 # Import our modules
 from config import get_config
@@ -129,7 +134,8 @@ async def root(api_key: str = Depends(get_api_key)):
             {"path": "/search", "method": "POST", "description": "Search for content"},
             {"path": "/process", "method": "POST", "description": "Process documents into vector database"},
             {"path": "/stats", "method": "GET", "description": "Get statistics about the vector database"},
-            {"path": "/sources/{source_id}", "method": "GET", "description": "Get all content from a specific source"}
+            {"path": "/sources/{source_id}", "method": "GET", "description": "Get all content from a specific source"},
+            {"path": "/dashboard", "method": "GET", "description": "Get a comprehensive dashboard view of the database statistics"}
         ]
     }
 
@@ -265,17 +271,39 @@ async def get_stats(api_key: str = Depends(get_api_key)):
 
     try:
         processor, _ = get_api_components()
-        stats = processor.get_collection_stats()
+        raw_stats = processor.get_collection_stats()
+        
+        # Format statistics in a more human-readable way
+        stats = {
+            "summary": {
+                "collection_name": raw_stats.get("collection_name", "content_library"),
+                "status": raw_stats.get("status", "unknown"),
+                "total_chunks": raw_stats.get("points_count", 0),
+                "unique_documents": raw_stats.get("unique_sources", 0),
+                "avg_chunks_per_document": raw_stats.get("avg_chunks_per_source", 0)
+            },
+            "database_info": {
+                "vectors_count": raw_stats.get("vectors_count"),
+                "segments_count": raw_stats.get("segments_count"),
+                "vector_dimension": raw_stats.get("vector_dimension", 1024)
+            },
+            "content": {
+                "file_type_distribution": raw_stats.get("file_types", {}),
+                "recently_processed": raw_stats.get("recently_processed", [])
+            },
+            "raw_statistics": raw_stats  # Include original stats for debugging
+        }
 
         duration_ms = (time.time() - start_time) * 1000
         return ApiResponse(
             success=True,
             data=stats,
+            message="Database statistics retrieved successfully",
             duration_ms=duration_ms
         )
 
     except Exception as e:
-        logger.error(f"Error getting stats: {str(e)}", exc_info=True)
+        logger.error(f"Error getting statistics: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sources/{source_id}", response_model=ApiResponse)
@@ -402,6 +430,104 @@ async def optimized_retrieval(topic: str = Body(...), limit: int = Body(20), api
 
     except Exception as e:
         logger.error(f"Error during optimized retrieval: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/dashboard", response_model=ApiResponse)
+async def get_dashboard(api_key: str = Depends(get_api_key)):
+    """
+    Get a comprehensive dashboard view of the database statistics
+    
+    Returns:
+    - success: Whether the request was successful
+    - data: Dashboard statistics with formatting hints for UI
+    - duration_ms: Request duration in milliseconds
+    """
+    start_time = time.time()
+
+    try:
+        processor, _ = get_api_components()
+        raw_stats = processor.get_collection_stats()
+        
+        # Calculate additional metrics
+        total_points = raw_stats.get("points_count", 0)
+        total_sources = raw_stats.get("unique_sources", 0)
+        avg_chunks = 0 if total_sources == 0 else round(total_points / total_sources, 1)
+        
+        # Prepare dashboard data with formatting hints
+        dashboard = {
+            "metrics": [
+                {
+                    "name": "Total Documents",
+                    "value": total_sources,
+                    "format": "number",
+                    "icon": "document",
+                    "description": "Number of unique documents processed"
+                },
+                {
+                    "name": "Total Chunks",
+                    "value": total_points,
+                    "format": "number",
+                    "icon": "database",
+                    "description": "Total number of vector chunks in the database"
+                },
+                {
+                    "name": "Avg. Chunks per Document",
+                    "value": avg_chunks,
+                    "format": "decimal",
+                    "icon": "chart-bar",
+                    "description": "Average number of chunks per document"
+                },
+                {
+                    "name": "Database Status",
+                    "value": raw_stats.get("status", "unknown"),
+                    "format": "status",
+                    "icon": "status-circle",
+                    "description": "Current status of the database"
+                }
+            ],
+            "file_types": {
+                "chart_type": "pie",
+                "data": [
+                    {"name": file_type, "value": count}
+                    for file_type, count in raw_stats.get("file_types", {}).items()
+                ],
+                "title": "Document Types Distribution"
+            },
+            "collection_info": {
+                "name": raw_stats.get("collection_name", "content_library"),
+                "segments": raw_stats.get("segments_count", 0),
+                "vector_dimension": raw_stats.get("vector_dimension", 1024)
+            },
+            "recent_activity": [
+                {
+                    "title": doc.get("title", "Unknown Document"),
+                    "id": doc.get("source_id", ""),
+                    "timestamp": doc.get("processed_at", "Unknown")
+                }
+                for doc in raw_stats.get("recently_processed", [])
+            ]
+        }
+        
+        # Add database health indicator
+        dashboard["health"] = {
+            "status": "healthy" if raw_stats.get("status") == "green" else "warning",
+            "last_checked": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "details": {
+                "vectors_status": "available" if raw_stats.get("vectors_count") is not None else "unknown",
+                "segments_status": "optimized" if raw_stats.get("segments_count", 0) < 20 else "needs_optimization"
+            }
+        }
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data=dashboard,
+            message="Dashboard data retrieved successfully",
+            duration_ms=duration_ms
+        )
+
+    except Exception as e:
+        logger.error(f"Error generating dashboard: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Server ---

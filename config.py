@@ -1,6 +1,10 @@
 import os
 import logging
 from typing import Dict, Any, Optional
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
 
 # Configure logging
 logger = logging.getLogger("config")

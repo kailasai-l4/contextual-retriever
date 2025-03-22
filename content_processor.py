@@ -707,6 +707,17 @@ class ContentProcessor:
                     "session_id": self.current_session_id
                 }
 
+                # Add source type if provided
+                if "source_type" in chunk:
+                    payload["source_type"] = chunk["source_type"]
+
+                # Add chunking info if available
+                if "token_count" in chunk:
+                    payload["chunking"] = {
+                        "token_count": chunk.get("token_count"),
+                        "chunk_method": metadata.get("chunk_method", "token_based")
+                    }
+
                 # Create point with proper UUID format
                 points.append(models.PointStruct(
                     id=point_id,  # UUID string
@@ -987,41 +998,58 @@ class ContentProcessor:
         """Get statistics about the collection"""
         try:
             collection_info = self.client.get_collection(self.collection_name)
-
+            
+            # Initialize stats dictionary with default values
+            stats = {
+                "vectors_count": None,
+                "points_count": 0,
+                "segments_count": None,
+                "status": "unknown",
+                "unique_sources": 0,
+                "avg_chunks_per_source": 0,
+                "collection_name": self.collection_name,
+                "file_types": {},
+                "recently_processed": [],
+                "vector_dimension": 1024  # Default for Jina embeddings
+            }
+            
             # Handle different Qdrant client versions or response formats
             if hasattr(collection_info, 'vectors_count'):
                 # Object-style response
-                stats = {
+                stats.update({
                     "vectors_count": collection_info.vectors_count,
                     "points_count": collection_info.points_count,
                     "segments_count": collection_info.segments_count,
                     "status": collection_info.status
-                }
+                })
             elif isinstance(collection_info, tuple) and len(collection_info) >= 2:
                 # Tuple-style response format
-                stats = {
+                stats.update({
                     "vectors_count": collection_info[0],
                     "points_count": collection_info[1],
                     "status": "active"
-                }
+                })
             else:
                 # Fallback for unknown format
-                stats = {
+                stats.update({
                     "status": "active",
                     "collection_exists": True
-                }
+                })
 
-            # Get unique source counts (may be slow for large collections)
+            # Get unique source counts and additional metadata
             try:
                 # Try to safely get scroll results and handle different formats
                 scroll_results = self.client.scroll(
                     collection_name=self.collection_name,
                     limit=10000,
-                    with_payload=["source_id"],
+                    with_payload=["source_id", "source_type", "metadata", "content_title", "chunking"],
                     with_vectors=False
                 )
 
                 unique_sources = set()
+                file_types = {}
+                recent_documents = []
+                processed_timestamps = {}
 
                 # Handle different scroll_results formats
                 try:
@@ -1030,8 +1058,24 @@ class ContentProcessor:
                         # If it's a tuple (points, next_page_offset)
                         points = scroll_results[0]
                         for point in points:
-                            if hasattr(point, 'payload') and "source_id" in point.payload:
-                                unique_sources.add(point.payload["source_id"])
+                            if hasattr(point, 'payload'):
+                                payload = point.payload
+                                
+                                # Track unique sources
+                                if "source_id" in payload:
+                                    source_id = payload["source_id"]
+                                    unique_sources.add(source_id)
+                                    
+                                    # Track file types
+                                    if "source_type" in payload:
+                                        source_type = payload["source_type"]
+                                        file_types[source_type] = file_types.get(source_type, 0) + 1
+                                    
+                                    # Track processing timestamps for recency
+                                    if "metadata" in payload and "processed_at" in payload["metadata"]:
+                                        processed_at = payload["metadata"]["processed_at"]
+                                        processed_timestamps[source_id] = (processed_at, payload.get("content_title", source_id))
+                    
                     # Handle iterator differently to avoid unpacking errors
                     elif hasattr(scroll_results, '__iter__'):
                         try:
@@ -1045,17 +1089,45 @@ class ContentProcessor:
                                 # Process the batch
                                 if isinstance(batch, (list, tuple)) or hasattr(batch, '__iter__'):
                                     for point in batch:
-                                        if hasattr(point, 'payload') and "source_id" in point.payload:
-                                            unique_sources.add(point.payload["source_id"])
+                                        if hasattr(point, 'payload'):
+                                            payload = point.payload
+                                            
+                                            # Track unique sources
+                                            if "source_id" in payload:
+                                                source_id = payload["source_id"]
+                                                unique_sources.add(source_id)
+                                                
+                                                # Track file types
+                                                if "source_type" in payload:
+                                                    source_type = payload["source_type"]
+                                                    file_types[source_type] = file_types.get(source_type, 0) + 1
+                                                
+                                                # Track processing timestamps for recency
+                                                if "metadata" in payload and "processed_at" in payload["metadata"]:
+                                                    processed_at = payload["metadata"]["processed_at"]
+                                                    processed_timestamps[source_id] = (processed_at, payload.get("content_title", source_id))
                         except Exception as iter_error:
                             logger.error(f"Error iterating scroll results: {str(iter_error)}")
                 except Exception as e:
                     logger.error(f"Error processing scroll results: {str(e)}")
 
-                stats["unique_sources"] = len(unique_sources)
+                # Add unique sources count
+                source_count = len(unique_sources)
+                stats["unique_sources"] = source_count
+                
+                # Calculate average chunks per source
+                if source_count > 0:
+                    stats["avg_chunks_per_source"] = round(stats["points_count"] / source_count, 2)
+                
+                # Add file type distribution
+                stats["file_types"] = file_types
+                
+                # Add recently processed documents (up to 5)
+                recent_docs = sorted(processed_timestamps.items(), key=lambda x: x[1][0], reverse=True)[:5]
+                stats["recently_processed"] = [{"source_id": src_id, "title": title} for src_id, (_, title) in recent_docs]
 
             except Exception as e:
-                logger.warning(f"Failed to count unique sources: {str(e)}")
+                logger.warning(f"Failed to gather detailed stats: {str(e)}")
                 stats["unique_sources"] = "Unknown"
 
             return stats
