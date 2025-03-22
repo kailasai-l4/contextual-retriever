@@ -451,6 +451,13 @@ async def get_dashboard(api_key: str = Depends(get_api_key)):
         # Calculate additional metrics
         total_points = raw_stats.get("points_count", 0)
         total_sources = raw_stats.get("unique_sources", 0)
+        
+        # Ensure we're working with numeric values
+        if isinstance(total_points, str):
+            total_points = int(total_points) if total_points.isdigit() else 0
+        if isinstance(total_sources, str):
+            total_sources = int(total_sources) if total_sources.isdigit() else 0
+            
         avg_chunks = 0 if total_sources == 0 else round(total_points / total_sources, 1)
         
         # Prepare dashboard data with formatting hints
