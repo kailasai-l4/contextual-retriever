@@ -15,6 +15,10 @@ import requests
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import logging
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
 
 # Import our configuration module
 from config import get_config, Config
