@@ -19,7 +19,7 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 # Import configuration
-from config import get_config
+from config import get_config, get_qdrant_client
 
 # Initialize logging
 logger = logging.getLogger("advanced_retriever")
@@ -58,11 +58,14 @@ class AdvancedRetriever:
         genai.configure(api_key=gemini_api_key)
         self.gemini_model = genai.GenerativeModel(self.config.get('gemini', 'model', default="gemini-1.5-flash-latest"))
 
-        # Initialize client
-        self.client = QdrantClient(qdrant_url, port=qdrant_port)
+        # Initialize client using the shared client
+        self.client = get_qdrant_client(qdrant_url, qdrant_port)
 
         # Set up logging
         log_file = self.config.get('logging', 'file', default="rag_retriever.log")
+        # Ensure the log directory exists
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        
         # Configure file handler for this module's logger if not already set up
         if not logger.handlers:
             file_handler = logging.FileHandler(log_file)
@@ -78,8 +81,9 @@ class AdvancedRetriever:
         # Check if collection exists and has data
         self._check_qdrant_collection()
 
+    @backoff.on_exception(backoff.expo, Exception, max_tries=3, jitter=backoff.full_jitter)
     def _check_qdrant_collection(self) -> bool:
-        """Check if Qdrant collection exists and has vectors"""
+        """Check if Qdrant collection exists and has vectors with improved error handling"""
         try:
             # Check if collection exists
             if not self.client.collection_exists(self.collection_name):
@@ -135,6 +139,7 @@ class AdvancedRetriever:
             logger.error(f"Error checking collection: {str(e)}", exc_info=True)
             return False
 
+    @backoff.on_exception(backoff.expo, Exception, max_tries=3, jitter=backoff.full_jitter)
     def search(self, query: str, limit: int = 20, use_optimized_retrieval: bool = True) -> List[Dict[str, Any]]:
         """
         Search for content with advanced optimization options
@@ -175,8 +180,13 @@ class AdvancedRetriever:
         if use_optimized_retrieval:
             # Use the full optimization strategy
             logger.debug("Using optimized retrieval strategy")
-            result = self.retrieve_optimized_content(query, limit)
-            return result["chunks"]
+            try:
+                result = self.retrieve_optimized_content(query, limit)
+                return result["chunks"]
+            except Exception as e:
+                logger.error(f"Error in optimized retrieval: {str(e)}", exc_info=True)
+                logger.info("Falling back to standard search due to error")
+                return self._simple_search(query, limit=limit, use_expansion=True)
         else:
             # Use standard search
             logger.debug("Using standard search strategy")
@@ -194,6 +204,9 @@ class AdvancedRetriever:
         Returns:
             Search results with metadata
         """
+        # Ensure limit is at least 1 to prevent Qdrant API errors
+        limit = max(1, limit)
+        
         try:
             search_query = query
 
@@ -345,7 +358,9 @@ class AdvancedRetriever:
 
         for query in tqdm(query_variations, desc="Searching query variations"):
             logger.debug(f"Searching with variation: '{query}'")
-            additional_results = self._simple_search(query, limit=limit//2, use_expansion=True)
+            # Ensure limit is at least 1 to prevent Qdrant API error
+            variation_limit = max(1, limit//2)
+            additional_results = self._simple_search(query, limit=variation_limit, use_expansion=True)
             logger.debug(f"Variation '{query}' returned {len(additional_results)} results")
             all_results.extend(additional_results)
 

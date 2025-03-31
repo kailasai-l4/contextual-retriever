@@ -3,7 +3,7 @@ import json
 import os
 import time
 import sys
-from test_utils import API_KEY, BASE_URL, HEADERS, print_section, load_dotenv
+from tests.test_utils import API_KEY, BASE_URL, HEADERS, print_section, load_dotenv
 
 # Load environment variables
 load_dotenv()

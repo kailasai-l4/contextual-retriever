@@ -11,10 +11,18 @@ from rich.layout import Layout
 from rich.text import Text
 from rich import box
 import sys
-from test_utils import API_KEY, BASE_URL, HEADERS, load_dotenv
+from dotenv import load_dotenv
+
+# Add parent directory to path so we can import modules from the main application
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Load environment variables
 load_dotenv()
+
+# API Configuration
+API_KEY = os.environ.get("API_KEY", "581e2e5fc4ed201bca765731798f4834f8424a129b8a5a4722c292cf3a13cfe8")
+BASE_URL = "http://localhost:8000"
+HEADERS = {"X-API-Key": API_KEY}
 
 # Initialize Rich console
 console = Console()

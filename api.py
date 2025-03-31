@@ -11,7 +11,7 @@ import time
 import json
 from typing import Dict, List, Optional, Any
 import logging
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, File, UploadFile, Body, Query, Header
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, File, UploadFile, Body, Query, Header, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -19,12 +19,13 @@ import uvicorn
 from fastapi.security import APIKeyHeader
 from dotenv import load_dotenv
 from datetime import datetime
+import traceback
 
 # Load .env file
 load_dotenv()
 
 # Import our modules
-from config import get_config
+from config import get_config, get_qdrant_client
 from content_processor import ContentProcessor
 from advanced_retriever import AdvancedRetriever
 
@@ -68,11 +69,33 @@ class ProcessRequest(BaseModel):
     recursive: Optional[bool] = Field(True, description="Process directories recursively")
     file_types: Optional[List[str]] = Field(None, description="File extensions to process (e.g., [\".md\", \".json\"])")
 
+class HealthResponse(BaseModel):
+    status: str
+    details: Dict[str, Any]
+    timestamp: str
+
 class ApiResponse(BaseModel):
     success: bool
     data: Any
     message: Optional[str] = None
     duration_ms: float
+
+# --- Error handling ---
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Global exception handler to provide consistent error responses"""
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": str(exc),
+            "message": "An unexpected error occurred",
+            "details": traceback.format_exc() if app.debug else None
+        }
+    )
 
 # --- Dependencies ---
 
@@ -93,7 +116,7 @@ def get_api_components():
     if not gemini_key:
         raise ValueError("Gemini API key not provided in config or environment")
 
-    # Initialize processor and retriever
+    # Initialize processor and retriever (they will share the Qdrant client)
     processor = ContentProcessor(
         jina_api_key=jina_key,
         gemini_api_key=gemini_key,
@@ -121,6 +144,59 @@ async def get_api_key(api_key_header: str = Depends(api_key_header)):
     else:
         raise HTTPException(status_code=403, detail="Could not validate credentials")
 
+# --- Health Check Endpoints ---
+
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health check endpoint for monitoring systems"""
+    try:
+        # Check Qdrant connection
+        qdrant_client = get_qdrant_client()
+        qdrant_status = "ok"
+        qdrant_details = "Connected"
+        
+        try:
+            # Try to get collection list
+            collections = qdrant_client.get_collections()
+            collection_count = len(collections.collections)
+            qdrant_details = f"Connected: {collection_count} collections available"
+        except Exception as e:
+            qdrant_status = "degraded"
+            qdrant_details = f"Connection issue: {str(e)}"
+    except Exception as e:
+        qdrant_status = "error"
+        qdrant_details = f"Failed to connect: {str(e)}"
+    
+    # Overall status depends on Qdrant
+    status = "ok" if qdrant_status == "ok" else "degraded" 
+    
+    return HealthResponse(
+        status=status,
+        details={
+            "api": "ok",
+            "qdrant": {
+                "status": qdrant_status,
+                "details": qdrant_details
+            }
+        },
+        timestamp=datetime.now().isoformat()
+    )
+
+@app.get("/readiness")
+async def readiness_probe():
+    """Kubernetes readiness probe endpoint"""
+    # Only return 200 OK if system is fully operational
+    health = await health_check()
+    if health.status != "ok":
+        raise HTTPException(status_code=503, detail="System not ready")
+    return {"status": "ready"}
+
+@app.get("/liveness")
+async def liveness_probe():
+    """Kubernetes liveness probe endpoint"""
+    # Just ensure the API is running 
+    return {"status": "alive"}
+
 # --- API Endpoints ---
 
 @app.get("/")
@@ -135,7 +211,10 @@ async def root(api_key: str = Depends(get_api_key)):
             {"path": "/process", "method": "POST", "description": "Process documents into vector database"},
             {"path": "/stats", "method": "GET", "description": "Get statistics about the vector database"},
             {"path": "/sources/{source_id}", "method": "GET", "description": "Get all content from a specific source"},
-            {"path": "/dashboard", "method": "GET", "description": "Get a comprehensive dashboard view of the database statistics"}
+            {"path": "/dashboard", "method": "GET", "description": "Get a comprehensive dashboard view of the database statistics"},
+            {"path": "/health", "method": "GET", "description": "Health check endpoint for monitoring systems"},
+            {"path": "/readiness", "method": "GET", "description": "Kubernetes readiness probe endpoint"},
+            {"path": "/liveness", "method": "GET", "description": "Kubernetes liveness probe endpoint"}
         ]
     }
 

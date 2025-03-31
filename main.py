@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import our configuration module
-from config import get_config, Config
+from config import get_config, Config, get_qdrant_client
 
 # Import our modules
 from content_processor import ContentProcessor
@@ -349,73 +349,173 @@ def reset_state(processor, args):
         print(f"Error: {str(e)}")
         sys.exit(1)
 
-def test_connections(processor, retriever, args):
-    """Test connection to APIs and Qdrant"""
-    print("Testing API and database connections...\n")
+def test_connections(args):
+    """Test API connections and Qdrant"""
+    print("\n===== Testing API Connections and Qdrant =====\n")
+    
+    logger = logging.getLogger("rag_retriever")
+    logger.info("Testing API connections and Qdrant")
+    
+    # Import required modules only when needed
+    import requests
+    import google.generativeai as genai
 
+    # Track overall test status
+    test_status = {
+        "qdrant": False,
+        "jina": False,
+        "gemini": False
+    }
+    
     # Test Qdrant connection
     print("1. Testing Qdrant connection...")
     try:
-        collection_info = processor.client.get_collection(processor.collection_name)
-        print(f"✓ Qdrant connection successful")
-        print(f"  Collection: {processor.collection_name}")
-
-        # Handle different Qdrant client versions or response formats
-        if hasattr(collection_info, 'points_count'):
-            # Object-style response
-            print(f"  Points: {collection_info.points_count}")
-            print(f"  Vectors: {collection_info.vectors_count}")
-        elif isinstance(collection_info, tuple) and len(collection_info) >= 2:
-            # Tuple-style response
-            print(f"  Points/Vectors: {collection_info[1]}")
-    except Exception as e:
-        print(f"✗ Qdrant connection failed: {str(e)}")
-        if args.verbose:
-            logger.error(f"Qdrant connection test failed", exc_info=True)
-
-    # Test Jina AI connection
-    print("\n2. Testing Jina AI API connection...")
-    try:
-        # Test embedding API
-        response = requests.post(
-            "https://api.jina.ai/v1/embeddings",
-            headers={
-                "Authorization": f"Bearer {processor.jina_api_key}",
-                "Accept": "application/json"
-            },
-            json={
-                "model": "jina-embeddings-v3",
-                "input": ["Test connection to Jina AI API"],
-                "task": "retrieval.passage"
-            },
-            timeout=10
-        )
-
-        if response.status_code == 200:
-            print(f"✓ Jina AI embedding API connection successful")
-            embedding = response.json()["data"][0]["embedding"]
-            print(f"  Embedding dimension: {len(embedding)}")
+        qdrant_url = args.qdrant_url or get_config().get('qdrant', 'url')
+        qdrant_port = args.qdrant_port or get_config().get('qdrant', 'port')
+        client = get_qdrant_client(qdrant_url, qdrant_port)
+        logger.info(f"✅ Connected to Qdrant at {qdrant_url}:{qdrant_port}")
+        print(f"   ✅ Connected to Qdrant at {qdrant_url}:{qdrant_port}")
+        test_status["qdrant"] = True
+        
+        # Check for any issues reported by Qdrant
+        try:
+            issues_url = f"http://{qdrant_url}:{qdrant_port}/issues"
+            response = requests.get(issues_url)
+            
+            if response.status_code == 200:
+                try:
+                    issues = response.json()
+                    # Handle different response formats - list or dict
+                    if isinstance(issues, list):
+                        issues_count = len(issues)
+                        issue_items = issues
+                    elif isinstance(issues, dict):
+                        issues_count = len(issues)
+                        issue_items = [{"description": f"{k}: {v}"} for k, v in issues.items()]
+                    else:
+                        issues_count = 1
+                        issue_items = [{"description": f"Unknown format: {str(issues)[:100]}"}]
+                
+                    if issues_count > 0:
+                        logger.warning(f"⚠️ Qdrant reported {issues_count} issues:")
+                        print(f"   ⚠️ Qdrant reported {issues_count} issues:")
+                        for issue in issue_items:
+                            description = issue.get("description", "Unknown issue") if isinstance(issue, dict) else str(issue)
+                            logger.warning(f"  - {description}")
+                            print(f"     - {description}")
+                        
+                        # Attempt to clear issues if asked
+                        if args.verbose:
+                            clear = input("   Do you want to attempt to clear these issues? (y/n): ")
+                            if clear.lower() in ['y', 'yes']:
+                                clear_response = requests.delete(issues_url)
+                                if clear_response.status_code == 200:
+                                    logger.info("✅ Successfully cleared Qdrant issues")
+                                    print("   ✅ Successfully cleared Qdrant issues")
+                                else:
+                                    logger.error(f"❌ Failed to clear issues: {clear_response.status_code} - {clear_response.text}")
+                                    print(f"   ❌ Failed to clear issues: {clear_response.status_code}")
+                    else:
+                        logger.info("✅ No issues reported by Qdrant")
+                        print("   ✅ No issues reported by Qdrant")
+                except Exception as parse_err:
+                    logger.warning(f"⚠️ Error parsing Qdrant issues response: {str(parse_err)}")
+                    print(f"   ⚠️ Error parsing Qdrant issues response: {str(parse_err)}")
+                    if args.verbose:
+                        print(f"   Response content: {response.text[:200]}...")
+            else:
+                logger.warning(f"⚠️ Could not check for Qdrant issues: {response.status_code} - {response.text}")
+                print(f"   ⚠️ Could not check for Qdrant issues: {response.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Error checking Qdrant issues: {str(e)}")
+            print(f"   ⚠️ Error checking Qdrant issues: {str(e)}")
+            
+        # Check collections
+        collections = client.get_collections()
+        if collections and hasattr(collections, 'collections'):
+            collection_count = len(collections.collections)
+            logger.info(f"✅ Found {collection_count} collections in Qdrant")
+            print(f"   ✅ Found {collection_count} collections in Qdrant")
+            
+            # Check for the content collection
+            collection_name = get_config().get('qdrant', 'collection_name')
+            if client.collection_exists(collection_name):
+                collection_info = client.get_collection(collection_name)
+                logger.info(f"✅ Found collection '{collection_name}' with {collection_info.vectors_count} vectors")
+                print(f"   ✅ Found collection '{collection_name}' with {collection_info.vectors_count} vectors")
+            else:
+                logger.warning(f"⚠️ Collection '{collection_name}' does not exist")
+                print(f"   ⚠️ Collection '{collection_name}' does not exist")
         else:
-            print(f"✗ Jina AI embedding API connection failed: {response.status_code} {response.text[:100]}")
+            logger.warning("⚠️ Could not retrieve collections list")
+            print("   ⚠️ Could not retrieve collections list")
+            
     except Exception as e:
-        print(f"✗ Jina AI API connection failed: {str(e)}")
-        if args.verbose:
-            logger.error(f"Jina AI API connection test failed", exc_info=True)
+        logger.error(f"❌ Failed to connect to Qdrant: {str(e)}")
+        print(f"   ❌ Failed to connect to Qdrant: {str(e)}")
 
-    # Test Gemini API connection
+    # Test Jina AI API
+    print("\n2. Testing Jina AI API connection...")
+    jina_key = args.jina_key or get_config().get('jina', 'api_key')
+    if jina_key:
+        try:
+            headers = {"Authorization": f"Bearer {jina_key}"}
+            # Test with a simple embeddings request instead of models list
+            response = requests.post(
+                "https://api.jina.ai/v1/embeddings",
+                headers=headers,
+                json={
+                    "model": "jina-embeddings-v3",
+                    "input": ["Test connection to Jina AI API"],
+                    "task": "retrieval.passage"
+                }
+            )
+            if response.status_code == 200:
+                logger.info("✅ Jina AI API connection successful")
+                print("   ✅ Jina AI API connection successful")
+                test_status["jina"] = True
+                if args.verbose:
+                    embedding = response.json().get("data", [{}])[0].get("embedding", [])
+                    logger.info(f"   Embedding dimension: {len(embedding)}")
+                    print(f"   Embedding dimension: {len(embedding)}")
+            else:
+                logger.error(f"❌ Jina AI API connection failed: {response.status_code} - {response.text}")
+                print(f"   ❌ Jina AI API connection failed: {response.status_code}")
+        except Exception as e:
+            logger.error(f"❌ Jina AI API connection failed: {str(e)}")
+            print(f"   ❌ Jina AI API connection failed: {str(e)}")
+    else:
+        logger.error("❌ Jina AI API key not provided")
+        print("   ❌ Jina AI API key not provided")
+
+    # Test Gemini API
     print("\n3. Testing Gemini API connection...")
-    try:
-        response = processor.gemini_model.generate_content("Say hello!")
-        print(f"✓ Gemini API connection successful")
-        print(f"  Model: {processor.config.get('gemini', 'model')}")
-        if args.verbose:
-            print(f"  Response: {response.text[:50]}...")
-    except Exception as e:
-        print(f"✗ Gemini API connection failed: {str(e)}")
-        if args.verbose:
-            logger.error(f"Gemini API connection test failed", exc_info=True)
+    gemini_key = args.gemini_key or get_config().get('gemini', 'api_key')
+    if gemini_key:
+        try:
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel("gemini-1.5-flash-latest")
+            response = model.generate_content("Hello, this is a test.")
+            logger.info("✅ Gemini API connection successful")
+            print("   ✅ Gemini API connection successful")
+            test_status["gemini"] = True
+            if args.verbose:
+                logger.info(f"   Test response: {response.text[:50]}...")
+                print(f"   Test response: {response.text[:50]}...")
+        except Exception as e:
+            logger.error(f"❌ Gemini API connection failed: {str(e)}")
+            print(f"   ❌ Gemini API connection failed: {str(e)}")
+    else:
+        logger.error("❌ Gemini API key not provided")
+        print("   ❌ Gemini API key not provided")
 
-    print("\nConnection tests completed.")
+    # Final summary
+    print("\n===== Test Summary =====")
+    print(f"Qdrant: {'✅ Connected' if test_status['qdrant'] else '❌ Failed'}")
+    print(f"Jina AI: {'✅ Connected' if test_status['jina'] else '❌ Failed'}")
+    print(f"Gemini: {'✅ Connected' if test_status['gemini'] else '❌ Failed'}")
+    print("\nTest completed. See logs for details.")
+    logger.info("Test completed. See logs for details.")
 
 def main():
     """Main entry point"""
@@ -449,7 +549,7 @@ def main():
     elif args.command == 'reset':
         reset_state(processor, args)
     elif args.command == 'test':
-        test_connections(processor, retriever, args)
+        test_connections(args)
     else:
         print("Please specify a valid command. Use -h for help.")
         sys.exit(1)

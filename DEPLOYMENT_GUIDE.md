@@ -83,7 +83,7 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -122,7 +122,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p /app/uploads /app/data
+RUN mkdir -p /app/uploads /app/data /app/logs /app/embedding_checkpoints
 
 # Expose port
 EXPOSE 8000
@@ -149,7 +149,10 @@ docker-compose ps
 # Check API server logs
 docker-compose logs -f rag_api
 
-# Test API endpoint
+# Test API health endpoint
+curl http://localhost:8000/health
+
+# Test API endpoint with authentication
 curl -H "X-API-Key: your_api_key" http://localhost:8000/
 ```
 
@@ -160,7 +163,7 @@ curl -H "X-API-Key: your_api_key" http://localhost:8000/
 docker-compose exec rag_api bash
 
 # Initialize database or run tests
-python main.py test
+python main.py test --verbose
 ```
 
 ## Monitoring and Maintenance
@@ -168,8 +171,45 @@ python main.py test
 ### Health Monitoring
 
 Set up monitoring for the following endpoints:
-- `http://localhost:8000/` - API server health
-- `http://localhost:6333/health` - Qdrant database health
+- `http://localhost:8000/health` - API and Qdrant health check
+- `http://localhost:8000/readiness` - Kubernetes readiness probe
+- `http://localhost:8000/liveness` - Kubernetes liveness probe
+
+For production monitoring systems (like Prometheus or Datadog), set up regular checks against these endpoints.
+
+Example health check response:
+```json
+{
+  "status": "ok",
+  "details": {
+    "api": "ok",
+    "qdrant": {
+      "status": "ok",
+      "details": "Connected: 1 collections available"
+    }
+  },
+  "timestamp": "2025-03-30T20:25:44.111894"
+}
+```
+
+### Detecting and Clearing Qdrant Issues
+
+The system now includes functionality to detect and clear issues with Qdrant. Run the test command to check and optionally clear issues:
+
+```bash
+# Enter the container
+docker-compose exec rag_api bash
+
+# Run test with verbose flag to check for Qdrant issues
+python main.py test --verbose
+```
+
+If issues are detected, the tool will offer to clear them automatically. You can also script this process for automated maintenance:
+
+```bash
+# Script to clear Qdrant issues
+curl -X DELETE http://qdrant:6333/issues
+```
 
 ### Logs
 
@@ -248,25 +288,25 @@ For higher load scenarios, consider:
        replicas: 3
    ```
 
-3. **Qdrant Clustering**: For very large vector databases, consider setting up Qdrant in cluster mode.
+3. **Connection Pooling**: The system now uses a singleton connection pattern for Qdrant, which improves performance under load by reusing connections.
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **API Connection Issues**
-   - Check if all containers are running: `docker-compose ps`
-   - Verify network connectivity: `docker-compose exec rag_api ping qdrant`
-   - Check API logs: `docker-compose logs rag_api`
+#### API Returns 503 Service Unavailable
 
-2. **Database Issues**
-   - Check Qdrant logs: `docker-compose logs qdrant`
-   - Verify collection exists: Access the Qdrant dashboard at http://localhost:6333/dashboard
+This typically indicates that Qdrant is not available or the system is still starting up. Check:
+1. Qdrant container status: `docker-compose ps qdrant`
+2. Qdrant logs: `docker-compose logs qdrant`
+3. API logs: `docker-compose logs rag_api`
+4. Check for Qdrant issues: `curl http://localhost:6333/issues`
 
-3. **Performance Problems**
-   - Check container resources: `docker stats`
-   - Monitor API response times through `/stats` endpoint
-   - Consider scaling options mentioned above
+#### Slow Search Performance
+
+1. Check Qdrant issues: `python main.py test --verbose`
+2. Check the number of vectors in the collection from the stats endpoint
+3. Consider optimizing search parameters in the configuration
 
 ## Production Checklist
 

@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 import sys
 import tabulate
-from test_utils import API_KEY, BASE_URL, HEADERS, load_dotenv
+from tests.test_utils import API_KEY, BASE_URL, HEADERS, load_dotenv
 
 # Load environment variables
 load_dotenv()

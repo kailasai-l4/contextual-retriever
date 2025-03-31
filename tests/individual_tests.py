@@ -2,7 +2,7 @@ import requests
 import json
 import time
 import sys
-from test_utils import API_KEY, BASE_URL, HEADERS, print_json
+from tests.test_utils import API_KEY, BASE_URL, HEADERS, print_json
 
 def print_json(json_data):
     """Pretty print JSON data"""

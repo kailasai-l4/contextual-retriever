@@ -26,7 +26,7 @@ from qdrant_client.http import models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 # Import configuration
-from config import get_config
+from config import get_config, get_qdrant_client
 
 # Initialize logging
 logger = logging.getLogger("content_processor")
@@ -63,8 +63,8 @@ class ContentProcessor:
         genai.configure(api_key=gemini_api_key)
         self.gemini_model = genai.GenerativeModel(self.config.get('gemini', 'model', default="gemini-1.5-flash-latest"))
 
-        # Initialize Qdrant client
-        self.client = QdrantClient(qdrant_url, port=qdrant_port)
+        # Initialize Qdrant client using the shared client
+        self.client = get_qdrant_client(qdrant_url, qdrant_port)
 
         # Get collection name from config
         self.collection_name = self.config.get('qdrant', 'collection_name', default="content_library")
@@ -81,6 +81,9 @@ class ContentProcessor:
 
         # Set up logging
         log_file = self.config.get('logging', 'embedding_log', default="embedding_process.log")
+        # Ensure the log directory exists
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        
         # Configure file handler for this module's logger with UTF-8 encoding
         file_handler = logging.FileHandler(log_file, encoding='utf-8', errors='replace')
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
@@ -590,58 +593,81 @@ class ContentProcessor:
             logger.error(f"Error during semantic chunking: {str(e)}", exc_info=True)
             return self._fallback_chunking(text, metadata)
 
-    def _fallback_chunking(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Simple fallback chunking method when the segmenter API fails"""
-        words = text.split()
-        chunk_size = self.chunk_max_tokens * 0.75  # Convert token estimate to words
-        overlap_size = self.chunk_overlap_tokens * 0.75  # Convert token estimate to words
-
-        chunks = []
-
-        for i in range(0, len(words), int(chunk_size - overlap_size)):
-            chunk_words = words[i:i + int(chunk_size)]
-            if len(chunk_words) < 20:  # Skip very small chunks
-                continue
-
-            chunk_text = " ".join(chunk_words)
-            chunks.append({
-                "text": chunk_text,
-                "is_overlap": False,
-                "chunk_index": i / (chunk_size - overlap_size),
-                "metadata": metadata.copy(),
-                "estimated_tokens": len(chunk_words) * 1.3,
-                "keywords": self._extract_keywords(chunk_text)
-            })
-
-        return chunks
-
-    def _extract_keywords(self, text: str, max_keywords: int = 10) -> List[str]:
+    @backoff.on_exception(backoff.expo, Exception, max_tries=3, jitter=backoff.full_jitter)
+    def _segment_content(self, content: str, file_path: str) -> List[Dict[str, Any]]:
         """
-        Extract keywords from text
-
+        Segment content into chunks using Jina's API with improved error handling
+        
+        Args:
+            content: Text content to segment
+            file_path: Original file path for reference
+            
         Returns:
-            List of keywords
+            List of content chunks
         """
-        # Simple keyword extraction (words that appear with higher frequency)
-        words = re.findall(r'\b[a-zA-Z]{3,15}\b', text.lower())
-
-        # Remove common stopwords
-        stopwords = {'the', 'and', 'is', 'in', 'it', 'to', 'of', 'for', 'with',
-                     'on', 'that', 'this', 'be', 'are', 'was', 'were', 'as', 'have', 'has',
-                     'had', 'but', 'not', 'can', 'from', 'by', 'you', 'we', 'they', 'or'}
-
-        filtered_words = [w for w in words if w not in stopwords]
-
-        # Count frequency
-        word_counts = {}
-        for word in filtered_words:
-            word_counts[word] = word_counts.get(word, 0) + 1
-
-        # Get most common words
-        sorted_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)
-        keywords = [word for word, count in sorted_words[:max_keywords]]
-
-        return keywords
+        # Check for oversized content and split if needed before sending to API
+        content_size = len(content.encode('utf-8'))
+        max_api_size = 60000  # 60KB, safely under Jina's 64KB limit
+        
+        if content_size > max_api_size:
+            logger.info(f"Content too large for segmenter API ({content_size} bytes), splitting into smaller parts")
+            return self._fallback_chunking(content, file_path)
+        
+        try:
+            # Attempt to use Jina's segmenter API
+            segments = self._call_segmenter_api(content)
+            return segments
+        except Exception as e:
+            logger.warning(f"Segmenter API error: {str(e)}")
+            logger.info("Progress: Falling back to simple chunking due to Segmenter API error")
+            return self._fallback_chunking(content, file_path)
+            
+    def _fallback_chunking(self, content: str, file_path: str) -> List[Dict[str, Any]]:
+        """
+        Fallback method to chunk content when the segmenter API fails
+        
+        Args:
+            content: Text content to segment
+            file_path: Original file path for reference
+            
+        Returns:
+            List of content chunks
+        """
+        # Split text into paragraphs
+        paragraphs = [p for p in re.split(r'\n\s*\n', content) if p.strip()]
+        
+        chunks = []
+        current_chunk = ""
+        current_token_count = 0
+        chunk_id = 1
+        
+        for para in paragraphs:
+            # Estimate token count (rough approximation)
+            para_token_count = len(para.split())
+            
+            # If adding this paragraph would exceed the chunk size, save the current chunk
+            if current_token_count + para_token_count > self.chunk_max_tokens and current_chunk:
+                chunks.append({
+                    "chunk_id": f"{Path(file_path).stem}-{chunk_id}",
+                    "text": current_chunk.strip(),
+                    "token_count": current_token_count
+                })
+                chunk_id += 1
+                current_chunk = para
+                current_token_count = para_token_count
+            else:
+                current_chunk += "\n\n" + para if current_chunk else para
+                current_token_count += para_token_count
+        
+        # Add the last chunk if it has content
+        if current_chunk:
+            chunks.append({
+                "chunk_id": f"{Path(file_path).stem}-{chunk_id}",
+                "text": current_chunk.strip(),
+                "token_count": current_token_count
+            })
+        
+        return chunks
 
     def _embed_and_store_chunks(self, chunks: List[Dict[str, Any]]):
         """
@@ -882,7 +908,7 @@ class ContentProcessor:
                           requests.exceptions.Timeout,
                           requests.exceptions.ConnectionError),
                          max_tries=3)
-    def search(self, query: str, limit: int = 100, use_expansion: bool = True):
+    def search(self, query: str, limit: int = 10, use_expansion: bool = True):
         """
         Search for content using the vector database
 
@@ -894,6 +920,9 @@ class ContentProcessor:
         Returns:
             Search results with metadata
         """
+        # Ensure limit is at least 1 to prevent Qdrant API errors
+        limit = max(1, limit)
+        
         try:
             search_query = query
 

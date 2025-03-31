@@ -4,7 +4,7 @@ import sys
 import os
 import time
 from pathlib import Path
-from test_utils import API_KEY, BASE_URL, HEADERS, print_json
+from tests.test_utils import API_KEY, BASE_URL, HEADERS, print_json
 
 UPLOADS_DIR = "uploads"
 

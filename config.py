@@ -2,12 +2,48 @@ import os
 import logging
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
+from qdrant_client import QdrantClient
 
 # Load .env file
 load_dotenv()
 
 # Configure logging
 logger = logging.getLogger("config")
+
+# Global QdrantClient instance for connection reuse
+_qdrant_client_instance = None
+
+def get_qdrant_client(url: str = None, port: int = None) -> QdrantClient:
+    """
+    Get or create the global QdrantClient instance with retry mechanisms
+
+    Args:
+        url: Qdrant server URL
+        port: Qdrant server port
+
+    Returns:
+        QdrantClient instance
+    """
+    global _qdrant_client_instance
+    
+    if _qdrant_client_instance is None:
+        config = get_config()
+        
+        # Use provided values or get from config
+        qdrant_url = url or config.get('qdrant', 'url')
+        qdrant_port = port or config.get('qdrant', 'port')
+        
+        logger.info(f"Initializing QdrantClient connection to {qdrant_url}:{qdrant_port}")
+        
+        # Configure client with timeout and retry settings
+        _qdrant_client_instance = QdrantClient(
+            url=qdrant_url,
+            port=qdrant_port,
+            timeout=30.0,  # Longer timeout for stability
+            prefer_grpc=False  # Use HTTP API for better compatibility
+        )
+    
+    return _qdrant_client_instance
 
 class Config:
     """Configuration manager for RAG Content Retriever that uses only environment variables"""

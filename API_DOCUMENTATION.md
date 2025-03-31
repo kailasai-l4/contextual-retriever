@@ -13,6 +13,8 @@ X-API-Key: your_api_key_here
 
 The API key is defined in the `.env` file or as an environment variable `API_KEY`.
 
+> **Note**: The health monitoring endpoints (`/health`, `/readiness`, `/liveness`) do not require authentication.
+
 ## API Endpoints
 
 ### Root Endpoint
@@ -37,11 +39,74 @@ Returns basic information about the API and available endpoints.
       {"path": "/process", "method": "POST", "description": "Process documents into vector database"},
       {"path": "/stats", "method": "GET", "description": "Get statistics about the vector database"},
       {"path": "/sources/{source_id}", "method": "GET", "description": "Get all content from a specific source"},
-      {"path": "/dashboard", "method": "GET", "description": "Get a comprehensive dashboard view of the database statistics"}
+      {"path": "/dashboard", "method": "GET", "description": "Get a comprehensive dashboard view of the database statistics"},
+      {"path": "/health", "method": "GET", "description": "Health check endpoint for monitoring systems"},
+      {"path": "/readiness", "method": "GET", "description": "Kubernetes readiness probe endpoint"},
+      {"path": "/liveness", "method": "GET", "description": "Kubernetes liveness probe endpoint"}
     ]
   },
   "message": null,
   "duration_ms": 1.2
+}
+```
+
+### Health Monitoring Endpoints
+
+#### Health Check Endpoint
+
+```
+GET /health
+```
+
+Returns the health status of the API and its dependencies (e.g., Qdrant). This endpoint does not require authentication.
+
+**Example Response:**
+```json
+{
+  "status": "ok",
+  "details": {
+    "api": "ok",
+    "qdrant": {
+      "status": "ok",
+      "details": "Connected: 1 collections available"
+    }
+  },
+  "timestamp": "2025-03-30T20:25:44.111894"
+}
+```
+
+Possible status values:
+- `ok`: All systems are functioning properly
+- `degraded`: Some components are experiencing issues but the system is still operational
+- `error`: Critical system components are not functioning
+
+#### Readiness Probe
+
+```
+GET /readiness
+```
+
+Kubernetes readiness probe endpoint. Returns 200 OK if the system is ready to accept requests, 503 Service Unavailable otherwise. This endpoint does not require authentication.
+
+**Example Response:**
+```json
+{
+  "status": "ready"
+}
+```
+
+#### Liveness Probe
+
+```
+GET /liveness
+```
+
+Kubernetes liveness probe endpoint. Returns 200 OK if the API is running. This endpoint does not require authentication.
+
+**Example Response:**
+```json
+{
+  "status": "alive"
 }
 ```
 
@@ -58,52 +123,44 @@ Searches the vector database for content based on the provided query.
 {
   "query": "Your search query",
   "limit": 10,
-  "optimize": true,
-  "filter": {
+  "use_optimized_retrieval": true,
+  "filters": {
     "source_type": ".md",
     "metadata.custom_field": "value"
-  },
-  "rerank": true,
-  "diverse_sources": true
+  }
 }
 ```
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | query | string | Yes | The search query text |
-| limit | integer | No | Maximum number of results to return (default: 10) |
-| optimize | boolean | No | Whether to use optimized search strategies (default: true) |
-| filter | object | No | Filters to apply to search results |
-| rerank | boolean | No | Whether to rerank results for improved relevance (default: true) |
-| diverse_sources | boolean | No | Whether to ensure results come from different sources (default: true) |
+| limit | integer | No | Maximum number of results to return (default: 20) |
+| use_optimized_retrieval | boolean | No | Whether to use optimized search strategies (default: true) |
+| filters | object | No | Filters to apply to search results |
 
 **Example Response:**
 ```json
 {
   "success": true,
   "data": {
+    "query": "Your search query",
+    "count": 3,
     "results": [
       {
-        "content": "This is the content of the first result",
+        "text": "This is the content of the first result",
         "source_id": "document1.md",
+        "source_path": "/path/to/document1.md",
         "score": 0.92,
-        "chunk_index": 3,
-        "content_title": "Chapter 1: Introduction",
+        "rerank_score": 0.95,
         "metadata": {
-          "processed_at": 1679823456,
-          "processed_time": "2023-03-26 12:30:56",
           "source_type": ".md"
         }
       },
       // ... more results
-    ],
-    "query": "Your search query",
-    "total_results": 25,
-    "returned_results": 10,
-    "duration_ms": 245.8
+    ]
   },
-  "message": "Search completed successfully",
-  "duration_ms": 250.1
+  "message": "Found 3 results",
+  "duration_ms": 245.8
 }
 ```
 
@@ -118,44 +175,30 @@ Processes documents into the vector database.
 **Request Body:**
 ```json
 {
-  "file_path": "/path/to/document.md",
-  "content": "Raw content to process if no file_path is provided",
-  "source_id": "custom_source_id",
-  "source_type": ".md",
-  "metadata": {
-    "author": "John Doe",
-    "created_at": "2023-03-25",
-    "custom_field": "custom_value"
-  },
-  "chunk_options": {
-    "method": "token_based",
-    "token_limit": 1000,
-    "overlap": 100
-  }
+  "directory_path": "/path/to/documents",
+  "recursive": true,
+  "file_types": [".md", ".txt"]
 }
 ```
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| file_path | string | No* | Path to the file to process (*required if content not provided) |
-| content | string | No* | Raw content to process (*required if file_path not provided) |
-| source_id | string | No | Custom ID for the source (auto-generated if not provided) |
-| source_type | string | No | Type of the source document |
-| metadata | object | No | Additional metadata for the document |
-| chunk_options | object | No | Options for chunking the document |
+| directory_path | string | Yes | Path to the directory containing documents to process |
+| recursive | boolean | No | Whether to process directories recursively (default: true) |
+| file_types | array | No | File extensions to process (e.g., [".md", ".txt"]) |
 
 **Example Response:**
 ```json
 {
   "success": true,
   "data": {
-    "source_id": "document1.md",
-    "chunks_processed": 15,
-    "vectors_added": 15,
-    "token_count": 12500
+    "status": "processing",
+    "task_id": "task_12345",
+    "directory": "/path/to/documents",
+    "file_count": 10
   },
-  "message": "Document processed successfully",
-  "duration_ms": 3520.4
+  "message": "Processing started in the background",
+  "duration_ms": 20.4
 }
 ```
 
@@ -195,13 +238,10 @@ Returns statistics about the vector database.
         },
         // ... more documents
       ]
-    },
-    "raw_statistics": {
-      // Raw database statistics
     }
   },
   "message": "Database statistics retrieved successfully",
-  "duration_ms": 156.8
+  "duration_ms": 350.4
 }
 ```
 
@@ -301,6 +341,74 @@ Returns all content from a specific source.
 }
 ```
 
+### Optimized Retrieval Endpoint
+
+```
+POST /optimized_retrieval
+```
+
+Performs an advanced semantic search with specialized retrieval strategies including query expansion, multi-query generation, and reranking for improved relevance.
+
+**Request Body:**
+```json
+{
+  "query": "Your search query",
+  "limit": 10,
+  "filters": {
+    "source_type": ".md",
+    "metadata.custom_field": "value"
+  },
+  "diversity_weight": 0.5,
+  "rerank_results": true,
+  "enable_query_expansion": true
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| query | string | Yes | The search query text |
+| limit | integer | No | Maximum number of results to return (default: 20) |
+| filters | object | No | Filters to apply to search results |
+| diversity_weight | float | No | Weight for source diversity in results (0.0-1.0, default: 0.3) |
+| rerank_results | boolean | No | Whether to apply reranking to search results (default: true) |
+| enable_query_expansion | boolean | No | Whether to generate expanded query variants (default: true) |
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "query": "Your search query",
+    "expanded_queries": [
+      "Your search query context",
+      "search query examples",
+      "search query explanation"
+    ],
+    "count": 5,
+    "results": [
+      {
+        "text": "This is the content of the first result",
+        "source_id": "document1.md",
+        "source_path": "/path/to/document1.md",
+        "score": 0.92,
+        "rerank_score": 0.95,
+        "metadata": {
+          "source_type": ".md"
+        }
+      },
+      // ... more results
+    ],
+    "optimizations_applied": {
+      "query_expansion": true,
+      "reranking": true,
+      "source_diversity": true
+    }
+  },
+  "message": "Found 5 results using optimized retrieval",
+  "duration_ms": 355.2
+}
+```
+
 ## Response Structure
 
 All API endpoints return responses with the following structure:
@@ -323,22 +431,33 @@ All API endpoints return responses with the following structure:
 
 ## Error Handling
 
-In case of an error, the API returns an appropriate HTTP status code along with a JSON response:
+All API endpoints now feature improved error handling with consistent error response formats.
+
+### Error Response Format
 
 ```json
 {
   "success": false,
-  "data": null,
-  "message": "Error message describing what went wrong",
-  "duration_ms": 12.5
+  "error": "Error type or message",
+  "message": "Detailed error message",
+  "details": "Additional error details or stack trace (only in debug mode)"
 }
 ```
 
-Common status codes:
-- 400: Bad Request (invalid parameters)
-- 401: Unauthorized (invalid API key)
-- 404: Not Found (resource not found)
-- 500: Internal Server Error (server-side error)
+### Common Error Codes
+
+| Status Code | Description |
+|-------------|-------------|
+| 400 | Bad Request - The request is malformed or contains invalid parameters |
+| 401 | Unauthorized - API key is missing |
+| 403 | Forbidden - API key is invalid |
+| 404 | Not Found - The requested resource does not exist |
+| 500 | Internal Server Error - An unexpected error occurred |
+| 503 | Service Unavailable - The service is temporarily unavailable (e.g., during maintenance or when a dependent service is down) |
+
+### Retry Strategy
+
+For transient errors (status codes 429, 503), clients should implement an exponential backoff retry strategy.
 
 ## Docker Deployment
 

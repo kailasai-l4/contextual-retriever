@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-API Tester
------------
-Test script for validating the RAG Content Retriever API functionality.
+Local API Tester
+---------------
+Test script for validating the RAG Content Retriever API functionality on localhost.
+This script doesn't require external API keys and focuses on the health checks and
+Qdrant connection.
 """
 
 import os
@@ -15,9 +17,9 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configuration
+# Configuration - localhost only
+BASE_URL = "http://localhost:8000"
 API_KEY = os.environ.get("API_KEY")
-BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
 
 def print_result(endpoint, response):
@@ -58,42 +60,32 @@ def test_endpoint(method, endpoint, payload=None, expected_status=200):
         return None
 
 def main():
-    """Run all API tests"""
-    print(f"Testing API at {BASE_URL}")
-    print(f"Using API Key: {'Yes' if API_KEY else 'No'}")
+    """Run local API tests focusing on health endpoints and Qdrant connection"""
+    print(f"Testing local API at {BASE_URL}")
     
-    # Test the health endpoint (doesn't require API key)
+    # Test health endpoints (these don't require API key)
     test_endpoint("GET", "/health")
-    
-    # Test the readiness endpoint (doesn't require API key)
     test_endpoint("GET", "/readiness")
-    
-    # Test the liveness endpoint (doesn't require API key)
     test_endpoint("GET", "/liveness")
     
-    # The following endpoints require API key
-    if not API_KEY:
-        print("⚠️ Warning: No API Key provided. Skipping protected endpoints.")
-        return
-    
-    # Test the root endpoint
-    test_endpoint("GET", "/")
-    
-    # Test search endpoint
-    payload = {
-        "query": "test query",
-        "limit": 5,
-        "use_optimized_retrieval": True
-    }
-    results = test_endpoint("POST", "/search", payload)
-    
-    # Test stats endpoint
-    test_endpoint("GET", "/stats")
-    
-    # Test dashboard endpoint
-    test_endpoint("GET", "/dashboard")
-
-    print("\nAPI Test completed.")
+    # If we have an API key, test the protected endpoints
+    if API_KEY:
+        # Test root endpoint
+        test_endpoint("GET", "/")
+        
+        # Test stats endpoint (good test for Qdrant connection)
+        test_endpoint("GET", "/stats")
+        
+        # Simple search test
+        simple_query = {
+            "query": "test",
+            "limit": 3,
+            "use_optimized_retrieval": False
+        }
+        test_endpoint("POST", "/search", simple_query)
+    else:
+        print("\n⚠️ No API key found in environment. Skipping protected endpoints.")
+        print("Use the .env file to set your API_KEY to test protected endpoints.")
 
 if __name__ == "__main__":
-    main()
+    main() 

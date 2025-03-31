@@ -13,6 +13,22 @@ A comprehensive tool for processing documents into vector embeddings and retriev
 - Enhanced statistics and dashboard visualization
 - Docker support for easy deployment and scalability
 - RESTful API with robust authentication
+- **NEW**: Health monitoring endpoints for production deployment
+- **NEW**: Improved error handling and stability
+- **NEW**: Singleton connection management for better performance
+
+## Recent Improvements
+
+We've made several significant improvements to the codebase to enhance stability and performance:
+
+- **Connection Management**: Implemented a singleton pattern for Qdrant client to prevent multiple connections
+- **Error Handling**: Added robust error handling with detailed logs and backoff strategies
+- **Health Monitoring**: Added `/health`, `/readiness`, and `/liveness` endpoints for Kubernetes compatibility
+- **Qdrant Issue Detection**: Added capability to detect and clear Qdrant issues automatically
+- **Testing**: Enhanced test scripts for better error reporting and API validation
+- **Configuration**: Improved environment variable handling and validation
+
+See [IMPROVEMENTS.md](IMPROVEMENTS.md) for a complete list of recent enhancements.
 
 ## Installation
 
@@ -97,11 +113,20 @@ python api.py --host 0.0.0.0 --port 8080
 
 See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
 
-### System Statistics
+### System Statistics and Monitoring
 
 ```bash
 # Show database statistics
 python main.py stats
+
+# Test API connections and check Qdrant issues
+python main.py test --verbose
+
+# Test local API endpoints
+python tests/test_local_api.py
+
+# Test search functionality
+python specific_search.py "your search query"
 
 # Show detailed stats with visualization
 python test_enhanced_stats.py
@@ -114,9 +139,21 @@ python main.py clear --confirm
 
 # Reset processing state to reprocess all files
 python main.py reset --confirm
+```
 
-# Test API connections
-python main.py test
+### Health Monitoring
+
+The API now includes dedicated health check endpoints for production monitoring:
+
+```bash
+# Check API health (includes Qdrant status)
+curl http://localhost:8000/health
+
+# Kubernetes readiness probe
+curl http://localhost:8000/readiness
+
+# Kubernetes liveness probe
+curl http://localhost:8000/liveness
 ```
 
 ### Docker Deployment
@@ -129,6 +166,9 @@ docker build -t rag-content-retriever .
 
 # Run the container
 docker run -p 8000:8000 -v /path/to/data:/app/data -v /path/to/.env:/app/.env rag-content-retriever
+
+# Run with Docker Compose (recommended for production)
+docker-compose up -d
 ```
 
 ## How It Works
