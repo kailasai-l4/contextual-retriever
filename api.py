@@ -609,13 +609,20 @@ async def get_source_content(source_id: str, api_key: str = Depends(get_api_key)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload", response_model=ApiResponse)
-async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...), process_now: bool = Query(True), api_key: str = Depends(get_api_key)):
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    process_now: bool = Query(True),
+    collection: Optional[str] = Query(None, description="Target collection for the uploaded file"),
+    api_key: str = Depends(get_api_key)
+):
     """
     Upload and optionally process a file
 
     Parameters:
     - file: File to upload
     - process_now: Whether to process the file immediately
+    - collection: Target collection for the uploaded file (defaults to current collection)
 
     Returns:
     - success: Whether the upload was successful
@@ -625,7 +632,7 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
     start_time = time.time()
 
     try:
-        processor, _ = get_api_components()
+        processor, _ = get_api_components(collection)
 
         # Create uploads directory if it doesn't exist
         upload_dir = "uploads"
@@ -638,15 +645,21 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
 
         # Process the file if requested
         if process_now:
-            def process_file_task(path):
+            def process_file_task(path, target_collection=None):
                 try:
-                    logger.info(f"Processing uploaded file: {path}")
+                    logger.info(f"Processing uploaded file: {path}" + 
+                               (f" to collection {target_collection}" if target_collection else ""))
+                    
+                    # Set collection if specified
+                    if target_collection and target_collection != processor.collection_name:
+                        processor.set_collection(target_collection)
+                        
                     processor.process_file(path)
                     logger.info(f"Completed processing of uploaded file: {path}")
                 except Exception as e:
                     logger.error(f"Error processing uploaded file: {str(e)}", exc_info=True)
 
-            background_tasks.add_task(process_file_task, file_path)
+            background_tasks.add_task(process_file_task, file_path, collection)
             message = "File uploaded and processing started in the background"
         else:
             message = "File uploaded successfully"
@@ -659,7 +672,8 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
                 "path": file_path,
                 "size": file.size,
                 "content_type": file.content_type,
-                "processed": process_now
+                "processed": process_now,
+                "collection": collection or processor.collection_name
             },
             message=message,
             duration_ms=duration_ms

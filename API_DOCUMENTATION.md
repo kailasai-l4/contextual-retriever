@@ -682,6 +682,46 @@ Performs an advanced semantic search with specialized retrieval strategies inclu
 }
 ```
 
+### Upload Endpoint
+
+```
+POST /upload
+```
+
+Uploads a file and optionally processes it into the vector database.
+
+**Form Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| file | file | Yes | The file to upload |
+| process_now | boolean | No | Whether to process the file immediately (default: true) |
+| collection | string | No | Target collection for the uploaded file (defaults to current collection) |
+
+**Example cURL:**
+```bash
+curl -X POST \
+  'http://localhost:8000/upload?process_now=true&collection=my_collection' \
+  --header 'X-API-Key: your_api_key_here' \
+  --form 'file=@/path/to/your/document.md'
+```
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "filename": "document.md",
+    "path": "uploads/document.md",
+    "size": 1254,
+    "content_type": "text/markdown",
+    "processed": true,
+    "collection": "my_collection"
+  },
+  "message": "File uploaded and processing started in the background",
+  "duration_ms": 45.7
+}
+```
+
 ## Error Responses
 
 All endpoints return standardized error responses with appropriate HTTP status codes.
