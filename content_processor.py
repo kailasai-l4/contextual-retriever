@@ -39,7 +39,8 @@ class ContentProcessor:
                  qdrant_url: str = "localhost",
                  qdrant_port: int = 6333,
                  checkpoint_dir: str = None,
-                 config_path: str = None):
+                 config_path: str = None,
+                 collection: str = None):
         """
         Initialize the content processor with API keys and database connection
 
@@ -50,6 +51,7 @@ class ContentProcessor:
             qdrant_port: Port for Qdrant vector database
             checkpoint_dir: Directory to store checkpoint files
             config_path: Path to configuration file
+            collection: Name of the collection to use (defaults to config's default collection)
         """
         # Load configuration
         self.config = get_config(config_path)
@@ -66,8 +68,12 @@ class ContentProcessor:
         # Initialize Qdrant client using the shared client
         self.client = get_qdrant_client(qdrant_url, qdrant_port)
 
-        # Get collection name from config
-        self.collection_name = self.config.get('qdrant', 'collection_name', default="content_library")
+        # Get collection name
+        self.default_collection = self.config.get('qdrant', 'default_collection', default="content_library")
+        self.collection_name = collection or self.default_collection
+
+        # Available collections
+        self.available_collections = self.config.get('qdrant', 'collections', default=[self.default_collection])
 
         # Get chunking parameters from config
         self.chunk_max_tokens = self.config.get('chunking', 'max_chunk_tokens', default=1000)
@@ -77,7 +83,7 @@ class ContentProcessor:
         self.embedding_batch_size = self.config.get('embedding', 'batch_size', default=10)
 
         # Setup vector dimension based on Jina embedding model
-        self.vector_size = 1024  # Jina embeddings v3 dimension
+        self.vector_size = self.config.get('qdrant', 'vector_size', default=1024)  # Jina embeddings v3 dimension
 
         # Set up logging
         log_file = self.config.get('logging', 'embedding_log', default="embedding_process.log")
@@ -109,17 +115,41 @@ class ContentProcessor:
         self._load_state()
 
         # Ensure collection exists
-        self._ensure_collection_exists()
+        self._ensure_collection_exists(self.collection_name)
 
         logger.info(f"ContentProcessor initialized with collection '{self.collection_name}'")
 
-    def _ensure_collection_exists(self):
-        """Create the vector collection if it doesn't exist"""
+    def set_collection(self, collection_name: str) -> bool:
+        """
+        Change the active collection
+
+        Args:
+            collection_name: Name of the collection to use
+
+        Returns:
+            bool: True if collection exists or was created, False otherwise
+        """
         try:
-            if not self.client.collection_exists(self.collection_name):
-                logger.info(f"Creating collection {self.collection_name}")
+            self._ensure_collection_exists(collection_name)
+            self.collection_name = collection_name
+            logger.info(f"Switched to collection: {collection_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set collection '{collection_name}': {str(e)}")
+            return False
+
+    def _ensure_collection_exists(self, collection_name: str):
+        """
+        Create the vector collection if it doesn't exist
+
+        Args:
+            collection_name: Name of the collection to ensure exists
+        """
+        try:
+            if not self.client.collection_exists(collection_name):
+                logger.info(f"Creating collection {collection_name}")
                 self.client.create_collection(
-                    collection_name=self.collection_name,
+                    collection_name=collection_name,
                     vectors_config=models.VectorParams(
                         size=self.vector_size,
                         distance=models.Distance.COSINE
@@ -140,15 +170,20 @@ class ContentProcessor:
                 )
 
                 # Create payload indexes for efficient filtering
-                self._create_indexes()
+                self._create_indexes(collection_name)
             else:
-                logger.info(f"Collection {self.collection_name} already exists")
+                logger.info(f"Collection {collection_name} already exists")
         except Exception as e:
             logger.error(f"Error ensuring collection exists: {str(e)}", exc_info=True)
             raise RuntimeError(f"Failed to initialize Qdrant collection: {str(e)}") from e
 
-    def _create_indexes(self):
-        """Create necessary indexes for efficient filtering"""
+    def _create_indexes(self, collection_name: str):
+        """
+        Create necessary indexes for efficient filtering
+
+        Args:
+            collection_name: Name of the collection to create indexes for
+        """
         indexes = [
             ("source_id", models.PayloadSchemaType.KEYWORD),
             ("source_type", models.PayloadSchemaType.KEYWORD),
@@ -160,13 +195,13 @@ class ContentProcessor:
         for field_name, field_type in indexes:
             try:
                 self.client.create_payload_index(
-                    collection_name=self.collection_name,
+                    collection_name=collection_name,
                     field_name=field_name,
                     field_schema=field_type
                 )
-                logger.info(f"Created index on {field_name}")
+                logger.info(f"Created index on {field_name} for collection {collection_name}")
             except Exception as e:
-                logger.warning(f"Failed to create index on {field_name}: {str(e)}")
+                logger.warning(f"Failed to create index on {field_name} for collection {collection_name}: {str(e)}")
 
     def _load_state(self):
         """Load processing state from disk if it exists"""
@@ -669,157 +704,83 @@ class ContentProcessor:
         
         return chunks
 
-    def _embed_and_store_chunks(self, chunks: List[Dict[str, Any]]):
+    def _embed_and_store_chunks(self, chunks: List[Dict[str, Any]], collection: str = None):
         """
-        Embed and store chunks in batches with progress tracking
-
+        Embed and store chunks with optimized batching
+        
         Args:
-            chunks: List of chunk objects to embed and store
+            chunks: List of content chunks to embed
+            collection: Optional target collection (defaults to current collection)
         """
-        embedded_count = 0
+        if not chunks:
+            logger.debug("No chunks to embed and store")
+            return
 
-        # Process in batches
-        for i in tqdm(range(0, len(chunks), self.embedding_batch_size), desc="Embedding chunks"):
-            batch = chunks[i:i + self.embedding_batch_size]
-            batch_texts = [chunk["text"] for chunk in batch]
+        target_collection = collection or self.collection_name
+        
+        # Split chunks into batches
+        batch_size = self.embedding_batch_size
+        logger.info(f"Embedding {len(chunks)} chunks in batches of {batch_size}")
 
-            # Retry loop for embedding generation
-            max_retries = 3
-            retry_delay = 2  # seconds
-            success = False
-
-            for retry in range(max_retries):
-                try:
-                    # Generate embeddings using Jina AI
-                    logger.debug(f"Generating embeddings for batch of {len(batch_texts)} texts (retry {retry+1}/{max_retries})")
-                    embeddings = self._generate_embeddings(batch_texts)
-                    logger.debug(f"Successfully generated {len(embeddings)} embeddings")
-                    success = True
-                    break
-                except Exception as e:
-                    if retry < max_retries - 1:
-                        logger.warning(f"Embedding generation failed (attempt {retry+1}/{max_retries}): {str(e)}")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-                    else:
-                        logger.error(f"All retry attempts failed for embedding generation: {str(e)}", exc_info=True)
-
-            if not success:
-                logger.error(f"Skipping batch {i//self.embedding_batch_size + 1} due to embedding failures")
-                continue
-
-            # Prepare points for Qdrant with UUID format IDs
-            points = []
-            for j, (chunk, embedding) in enumerate(zip(batch, embeddings)):
-                # Generate a proper UUID for each point
-                point_id = str(uuid.uuid4())
-
-                # Prepare metadata for storage
-                metadata = chunk["metadata"].copy() if "metadata" in chunk else {}
-
-                # Prepare payload
-                payload = {
-                    "text": chunk["text"],
-                    "source_id": chunk.get("source_id", ""),
-                    "source_path": chunk.get("source_path", ""),
-                    "source_type": chunk.get("source_type", ""),
-                    "chunk_id": chunk.get("chunk_id", ""),
-                    "chunk_index": chunk.get("chunk_index", 0),
-                    "is_overlap": chunk.get("is_overlap", False),
-                    "topic_keywords": chunk.get("keywords", []),
-                    "token_count": int(chunk.get("estimated_tokens", 0)),
-                    "metadata": metadata,
-                    "embedding_time": time.time(),
-                    "session_id": self.current_session_id
-                }
-
-                # Add source type if provided
-                if "source_type" in chunk:
-                    payload["source_type"] = chunk["source_type"]
-
-                # Add chunking info if available
-                if "token_count" in chunk:
-                    payload["chunking"] = {
-                        "token_count": chunk.get("token_count"),
-                        "chunk_method": metadata.get("chunk_method", "token_based")
-                    }
-
-                # Create point with proper UUID format
-                points.append(models.PointStruct(
-                    id=point_id,  # UUID string
-                    vector=embedding,
-                    payload=payload
-                ))
-
-            # Log detailed information about the points
-            logger.debug(f"Prepared {len(points)} points for upsert to Qdrant")
-
-            # Check if points list is not empty
-            if not points:
-                logger.warning("No points to upsert - empty batch")
-                continue
-
-            # Upload to Qdrant with retry logic
-            max_retries = 3
-            retry_delay = 2  # seconds
-            upsert_success = False
-
-            for retry in range(max_retries):
-                try:
-                    logger.debug(f"Upserting {len(points)} points to Qdrant collection {self.collection_name} (retry {retry+1}/{max_retries})")
-                    # Print first point ID for debugging
-                    if points:
-                        logger.debug(f"First point ID: {points[0].id}, Vector length: {len(points[0].vector)}")
-
-                    operation_info = self.client.upsert(
-                        collection_name=self.collection_name,
-                        points=points,
-                        wait=True
-                    )
-                    logger.debug(f"Upsert operation completed successfully: {operation_info}")
-
-                    # Verify points were actually added
+        # Process chunks in batches
+        for i in tqdm(range(0, len(chunks), batch_size), desc="Embedding batches"):
+            batch = chunks[i:i + batch_size]
+            
+            # Extract texts for embedding
+            texts = [chunk["text"] for chunk in batch]
+            chunk_ids = [chunk["chunk_id"] for chunk in batch]
+            
+            try:
+                # Generate embeddings
+                embeddings = self._generate_embeddings(texts)
+                
+                if len(embeddings) != len(batch):
+                    logger.error(f"Mismatch in embedding count: got {len(embeddings)}, expected {len(batch)}")
+                    continue
+                
+                # Create points for Qdrant
+                points = []
+                for j, (emb, chunk) in enumerate(zip(embeddings, batch)):
+                    # Convert chunk_id to a deterministic UUID for Qdrant
                     try:
-                        collection_info = self.client.get_collection(self.collection_name)
-                        if hasattr(collection_info, 'vectors_count') and hasattr(collection_info, 'points_count'):
-                            logger.debug(f"Collection now has {collection_info.vectors_count} vectors and {collection_info.points_count} points")
-                        else:
-                            # Handle case where collection_info might be a tuple or different structure
-                            logger.debug(f"Collection info retrieved successfully (details not available)")
-                    except Exception as e:
-                        logger.error(f"Error verifying point count: {str(e)}")
-
-                    # Mark as embedded in tracking
-                    for chunk in batch:
-                        self.embedded_chunks[chunk.get("chunk_id", "")] = True
-
-                    embedded_count += len(batch)
-                    logger.info(f"Progress: Successfully embedded and stored {len(batch)} chunks")
-                    upsert_success = True
-                    break
-
+                        point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, chunk["chunk_id"]))
+                    except Exception:
+                        # Fallback to a direct hash if uuid5 fails
+                        point_id = hashlib.md5(chunk["chunk_id"].encode('utf-8')).hexdigest()
+                    
+                    # Add to batch
+                    points.append(models.PointStruct(
+                        id=point_id,
+                        vector=emb,
+                        payload=chunk
+                    ))
+                
+                # Store in Qdrant
+                try:
+                    self.client.upsert(
+                        collection_name=target_collection,
+                        points=points
+                    )
+                    
+                    # Update embedded status
+                    for chunk_id in chunk_ids:
+                        self.embedded_chunks[chunk_id] = True
+                    
+                    # Save checkpoint after each batch
+                    if i % (batch_size * 5) == 0:
+                        self._save_state()
+                        
                 except Exception as e:
-                    if retry < max_retries - 1:
-                        logger.warning(f"Qdrant upsert failed (attempt {retry+1}/{max_retries}): {str(e)}")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-                    else:
-                        logger.error(f"All retry attempts failed for Qdrant upsert: {str(e)}", exc_info=True)
-                        # Try to get more details about the error
-                        if points:
-                            logger.error(f"First point ID: {points[0].id}")
-                            logger.error(f"Vector dimension: {len(points[0].vector) if points[0].vector else 'Unknown'}")
-
-            if not upsert_success:
-                logger.error(f"Failed to upsert batch {i//self.embedding_batch_size + 1}")
+                    logger.error(f"Error upserting batch to Qdrant: {str(e)}", exc_info=True)
+                    continue
+                    
+            except Exception as e:
+                logger.error(f"Error processing batch: {str(e)}", exc_info=True)
                 continue
-
-            # Checkpoint periodically
-            if embedded_count % (self.embedding_batch_size * 5) == 0 and embedded_count > 0:
-                self._save_state()
-
-        logger.info(f"Progress: Embedded and stored {embedded_count} chunks in total")
+                
+        # Final save
         self._save_state()
+        logger.info(f"Successfully embedded and stored {len(chunks)} chunks in collection {target_collection}")
 
     @backoff.on_exception(backoff.expo,
                          (requests.exceptions.RequestException,
@@ -1172,7 +1133,7 @@ class ContentProcessor:
 
         try:
             self.client.delete_collection(self.collection_name)
-            self._ensure_collection_exists()  # Recreate empty collection
+            self._ensure_collection_exists(self.collection_name)  # Recreate empty collection
 
             # Reset state
             self.embedded_chunks = {}
@@ -1211,6 +1172,170 @@ class ContentProcessor:
         except Exception as e:
             logger.error(f"Failed to reset processing state: {str(e)}", exc_info=True)
             return {"error": str(e)}
+
+    def process_bulk_data(self, data: List[Dict[str, Any]], collection: str = None) -> Dict[str, Any]:
+        """
+        Process bulk data directly from structured content
+
+        Args:
+            data: List of data items to process. Each item should have at least 'text' field
+                 and can optionally include 'metadata', 'source_id', etc.
+            collection: Optional target collection (defaults to current collection)
+
+        Returns:
+            Dict with processing statistics
+        """
+        target_collection = collection or self.collection_name
+        self._ensure_collection_exists(target_collection)
+        
+        start_time = time.time()
+        
+        # Track stats
+        stats = {
+            "total_items": len(data),
+            "processed_items": 0,
+            "processing_errors": 0,
+            "embedding_errors": 0,
+            "successful_items": 0,
+            "total_chunks": 0,
+            "collection": target_collection,
+            "elapsed_time": 0
+        }
+        
+        # Process each item
+        all_chunks = []
+        
+        for item_idx, item in enumerate(tqdm(data, desc="Processing items")):
+            try:
+                # Extract text and metadata
+                if "text" not in item:
+                    logger.warning(f"Item at index {item_idx} missing required 'text' field, skipping")
+                    stats["processing_errors"] += 1
+                    continue
+                
+                text = item["text"]
+                metadata = item.get("metadata", {})
+                
+                # Generate source_id if not provided
+                source_id = item.get("source_id", str(uuid.uuid4()))
+                
+                # Create semantic chunks
+                chunks = self._create_semantic_chunks(text, metadata)
+                
+                # Add source information
+                for i, chunk in enumerate(chunks):
+                    chunk_id = f"{source_id}_{i}"
+                    chunk["chunk_id"] = chunk_id
+                    chunk["source_id"] = source_id
+                    chunk["source_path"] = item.get("source_path", "bulk_upload")
+                    chunk["source_type"] = item.get("source_type", ".bulk")
+                
+                all_chunks.extend(chunks)
+                stats["processed_items"] += 1
+                stats["total_chunks"] += len(chunks)
+                
+            except Exception as e:
+                logger.error(f"Error processing item at index {item_idx}: {str(e)}", exc_info=True)
+                stats["processing_errors"] += 1
+        
+        # Embed and store chunks in batches
+        if all_chunks:
+            try:
+                self._embed_and_store_chunks(all_chunks, target_collection)
+                stats["successful_items"] = stats["processed_items"] - stats["embedding_errors"]
+            except Exception as e:
+                logger.error(f"Error during batch embedding: {str(e)}", exc_info=True)
+                stats["embedding_errors"] = stats["processed_items"]
+                stats["successful_items"] = 0
+        
+        stats["elapsed_time"] = time.time() - start_time
+        
+        logger.info(f"Bulk processing complete: {stats['successful_items']}/{stats['total_items']} items processed successfully")
+        return stats
+        
+    def bulk_upload_embeddings(self, embeddings: List[Dict[str, Any]], collection: str = None) -> Dict[str, Any]:
+        """
+        Upload pre-computed embeddings directly to the database
+
+        Args:
+            embeddings: List of embedding records. Each record should have:
+                       - 'id': Unique identifier for the point
+                       - 'vector': Vector embedding (List[float])
+                       - 'payload': Metadata to store with the vector
+            collection: Optional target collection (defaults to current collection)
+
+        Returns:
+            Dict with upload statistics
+        """
+        target_collection = collection or self.collection_name
+        self._ensure_collection_exists(target_collection)
+        
+        start_time = time.time()
+        
+        stats = {
+            "total_embeddings": len(embeddings),
+            "successful_uploads": 0,
+            "failed_uploads": 0,
+            "collection": target_collection,
+            "elapsed_time": 0
+        }
+        
+        # Convert to Qdrant points format
+        points = []
+        for emb in embeddings:
+            if "id" not in emb or "vector" not in emb:
+                logger.warning(f"Embedding missing required 'id' or 'vector' field, skipping")
+                stats["failed_uploads"] += 1
+                continue
+                
+            try:
+                # Process the embedding ID based on its type
+                point_id = emb["id"]
+                if isinstance(point_id, str):
+                    # For string IDs, use a string-based UUID variant
+                    try:
+                        uuid.UUID(point_id)  # Validate if it's already a UUID string
+                    except ValueError:
+                        # Hash the string ID to create a deterministic UUID
+                        point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, point_id))
+                elif isinstance(point_id, int):
+                    # Use provided integer ID directly
+                    pass
+                else:
+                    # For any other type, generate a random UUID
+                    point_id = str(uuid.uuid4())
+                
+                # Add the point to our batch
+                points.append(models.PointStruct(
+                    id=point_id,
+                    vector=emb["vector"],
+                    payload=emb.get("payload", {})
+                ))
+            except Exception as e:
+                logger.error(f"Error processing embedding: {str(e)}", exc_info=True)
+                stats["failed_uploads"] += 1
+        
+        # Upload in batches
+        batch_size = 100
+        successful = 0
+        
+        for i in tqdm(range(0, len(points), batch_size), desc="Uploading batches"):
+            batch = points[i:i+batch_size]
+            try:
+                self.client.upsert(
+                    collection_name=target_collection,
+                    points=batch
+                )
+                successful += len(batch)
+            except Exception as e:
+                logger.error(f"Error uploading batch: {str(e)}", exc_info=True)
+                stats["failed_uploads"] += len(batch)
+        
+        stats["successful_uploads"] = successful
+        stats["elapsed_time"] = time.time() - start_time
+        
+        logger.info(f"Bulk upload complete: {stats['successful_uploads']}/{stats['total_embeddings']} embeddings uploaded successfully")
+        return stats
 
 
 # Example usage

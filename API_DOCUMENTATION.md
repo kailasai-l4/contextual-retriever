@@ -38,6 +38,11 @@ Returns basic information about the API and available endpoints.
       {"path": "/search", "method": "POST", "description": "Search for content"},
       {"path": "/process", "method": "POST", "description": "Process documents into vector database"},
       {"path": "/stats", "method": "GET", "description": "Get statistics about the vector database"},
+      {"path": "/collections", "method": "GET", "description": "List available collections"},
+      {"path": "/collections/{name}", "method": "POST", "description": "Create a new collection"},
+      {"path": "/collections/{name}", "method": "GET", "description": "Get collection details"},
+      {"path": "/bulk/process", "method": "POST", "description": "Process bulk data"},
+      {"path": "/bulk/embeddings", "method": "POST", "description": "Upload pre-computed embeddings"},
       {"path": "/sources/{source_id}", "method": "GET", "description": "Get all content from a specific source"},
       {"path": "/dashboard", "method": "GET", "description": "Get a comprehensive dashboard view of the database statistics"},
       {"path": "/health", "method": "GET", "description": "Health check endpoint for monitoring systems"},
@@ -110,6 +115,146 @@ Kubernetes liveness probe endpoint. Returns 200 OK if the API is running. This e
 }
 ```
 
+### Collection Management Endpoints
+
+#### List Collections
+
+```
+GET /collections
+```
+
+Returns a list of all available collections in the system.
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "name": "content_library",
+      "vectors_count": 625,
+      "points_count": 625,
+      "vector_size": 1024,
+      "distance_metric": "Cosine"
+    },
+    {
+      "name": "research_data",
+      "vectors_count": 318,
+      "points_count": 318,
+      "vector_size": 1024,
+      "distance_metric": "Cosine"
+    }
+  ],
+  "message": "Found 2 collections",
+  "duration_ms": 35.6
+}
+```
+
+#### Create Collection
+
+```
+POST /collections/{name}
+```
+
+Creates a new collection with the specified name and parameters.
+
+**URL Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| name | string | Yes | Name of the collection to create |
+
+**Request Body:**
+```json
+{
+  "name": "my_collection",
+  "description": "My collection for research data",
+  "vector_size": 1024
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| name | string | Yes | Name of the collection (from URL) |
+| description | string | No | Description of the collection |
+| vector_size | integer | No | Vector dimension size for embeddings (defaults to 1024) |
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "name": "my_collection",
+    "vector_size": 1024,
+    "description": "My collection for research data"
+  },
+  "message": "Collection 'my_collection' created or accessed successfully",
+  "duration_ms": 120.4
+}
+```
+
+#### Get Collection Details
+
+```
+GET /collections/{name}
+```
+
+Returns detailed information about a specific collection.
+
+**URL Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| name | string | Yes | Name of the collection to retrieve |
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "name": "content_library",
+    "vectors_count": 625,
+    "points_count": 625,
+    "vector_size": 1024,
+    "distance_metric": "Cosine",
+    "segments_count": 10,
+    "payload_schema": {
+      "text": "string",
+      "source_id": "string",
+      "source_path": "string",
+      "source_type": "string",
+      "chunk_id": "string"
+    },
+    "status": "available"
+  },
+  "message": "Collection 'content_library' details retrieved",
+  "duration_ms": 46.7
+}
+```
+
+#### Delete Collection
+
+```
+DELETE /collections/{name}
+```
+
+Deletes a collection permanently.
+
+**URL Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| name | string | Yes | Name of the collection to delete |
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "name": "my_collection"
+  },
+  "message": "Collection 'my_collection' deleted successfully",
+  "duration_ms": 78.3
+}
+```
+
 ### Search Endpoint
 
 ```
@@ -127,7 +272,9 @@ Searches the vector database for content based on the provided query.
   "filters": {
     "source_type": ".md",
     "metadata.custom_field": "value"
-  }
+  },
+  "collection": "content_library",
+  "search_all_collections": false
 }
 ```
 
@@ -137,6 +284,8 @@ Searches the vector database for content based on the provided query.
 | limit | integer | No | Maximum number of results to return (default: 20) |
 | use_optimized_retrieval | boolean | No | Whether to use optimized search strategies (default: true) |
 | filters | object | No | Filters to apply to search results |
+| collection | string | No | Specific collection to search (if not provided, uses default) |
+| search_all_collections | boolean | No | Whether to search across all available collections (default: false) |
 
 **Example Response:**
 ```json
@@ -152,12 +301,14 @@ Searches the vector database for content based on the provided query.
         "source_path": "/path/to/document1.md",
         "score": 0.92,
         "rerank_score": 0.95,
+        "collection": "content_library",
         "metadata": {
           "source_type": ".md"
         }
       },
       // ... more results
-    ]
+    ],
+    "collections_searched": ["content_library"]
   },
   "message": "Found 3 results",
   "duration_ms": 245.8
@@ -177,7 +328,8 @@ Processes documents into the vector database.
 {
   "directory_path": "/path/to/documents",
   "recursive": true,
-  "file_types": [".md", ".txt"]
+  "file_types": [".md", ".txt"],
+  "collection": "my_collection"
 }
 ```
 
@@ -186,19 +338,135 @@ Processes documents into the vector database.
 | directory_path | string | Yes | Path to the directory containing documents to process |
 | recursive | boolean | No | Whether to process directories recursively (default: true) |
 | file_types | array | No | File extensions to process (e.g., [".md", ".txt"]) |
+| collection | string | No | Target collection for processed documents (defaults to current collection) |
 
 **Example Response:**
 ```json
 {
   "success": true,
   "data": {
-    "status": "processing",
-    "task_id": "task_12345",
-    "directory": "/path/to/documents",
-    "file_count": 10
+    "directory_path": "/path/to/documents",
+    "recursive": true,
+    "file_types": [".md", ".txt"],
+    "collection": "my_collection"
   },
-  "message": "Processing started in the background",
+  "message": "Document processing started in the background",
   "duration_ms": 20.4
+}
+```
+
+### Bulk Processing Endpoints
+
+#### Process Bulk Data
+
+```
+POST /bulk/process
+```
+
+Processes structured data directly into the vector database, without needing to read from files.
+
+**Request Body:**
+```json
+{
+  "data": [
+    {
+      "text": "This is the content of the first item to process",
+      "metadata": {
+        "title": "First Item",
+        "author": "John Doe",
+        "category": "Documentation"
+      },
+      "source_id": "custom-id-1"
+    },
+    {
+      "text": "This is the content of the second item to process",
+      "metadata": {
+        "title": "Second Item",
+        "author": "Jane Smith"
+      }
+    }
+  ],
+  "collection": "my_collection"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| data | array | Yes | Array of data items to process |
+| data[].text | string | Yes | Text content to embed |
+| data[].metadata | object | No | Metadata to store with the vector |
+| data[].source_id | string | No | Custom source ID (generated if not provided) |
+| collection | string | No | Target collection for processed data (defaults to current collection) |
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "items_count": 2,
+    "collection": "my_collection",
+    "task_id": "bulk_1679823456"
+  },
+  "message": "Bulk processing of 2 items started in the background",
+  "duration_ms": 15.2
+}
+```
+
+#### Upload Pre-computed Embeddings
+
+```
+POST /bulk/embeddings
+```
+
+Uploads pre-computed embeddings directly to the database, bypassing the embedding generation step.
+
+**Request Body:**
+```json
+{
+  "embeddings": [
+    {
+      "id": "doc-1",
+      "vector": [0.1, 0.2, 0.3, ..., 0.9],
+      "payload": {
+        "text": "This is the text that corresponds to the vector",
+        "source_id": "source-1",
+        "metadata": {
+          "title": "Document 1"
+        }
+      }
+    },
+    {
+      "id": 42,
+      "vector": [0.2, 0.3, 0.4, ..., 0.8],
+      "payload": {
+        "text": "Another document with a different vector",
+        "source_id": "source-2"
+      }
+    }
+  ],
+  "collection": "my_collection"
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| embeddings | array | Yes | Array of embedding records |
+| embeddings[].id | string/integer | Yes | Unique identifier for the embedding |
+| embeddings[].vector | array | Yes | Vector embedding (must match collection vector dimension) |
+| embeddings[].payload | object | No | Metadata to store with the vector |
+| collection | string | No | Target collection for embeddings (defaults to current collection) |
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "embeddings_count": 2,
+    "collection": "my_collection",
+    "task_id": "emb_upload_1679823456"
+  },
+  "message": "Upload of 2 embeddings started in the background",
+  "duration_ms": 18.7
 }
 ```
 
@@ -208,7 +476,12 @@ Processes documents into the vector database.
 GET /stats
 ```
 
-Returns statistics about the vector database.
+Returns statistics about the vector database. Can be filtered to a specific collection using the `collection` query parameter.
+
+**Query Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| collection | string | No | Collection to get statistics for (defaults to current collection) |
 
 **Example Response:**
 ```json
@@ -398,95 +671,93 @@ Performs an advanced semantic search with specialized retrieval strategies inclu
       },
       // ... more results
     ],
-    "optimizations_applied": {
-      "query_expansion": true,
-      "reranking": true,
-      "source_diversity": true
+    "metrics": {
+      "original_query_time_ms": 120.2,
+      "expansion_time_ms": 45.6,
+      "reranking_time_ms": 80.0
     }
   },
   "message": "Found 5 results using optimized retrieval",
-  "duration_ms": 355.2
+  "duration_ms": 245.8
 }
 ```
 
-## Response Structure
+## Error Responses
 
-All API endpoints return responses with the following structure:
+All endpoints return standardized error responses with appropriate HTTP status codes.
 
-```json
-{
-  "success": true|false,
-  "data": object|null,
-  "message": string|null,
-  "duration_ms": number
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| success | boolean | Whether the request was successful |
-| data | object | Response data (null if error) |
-| message | string | Response or error message (null if not provided) |
-| duration_ms | number | Request processing duration in milliseconds |
-
-## Error Handling
-
-All API endpoints now feature improved error handling with consistent error response formats.
-
-### Error Response Format
-
+**Example Error Response:**
 ```json
 {
   "success": false,
-  "error": "Error type or message",
-  "message": "Detailed error message",
-  "details": "Additional error details or stack trace (only in debug mode)"
+  "error": "Collection 'unknown_collection' not found",
+  "message": "The requested resource could not be found",
+  "details": null
 }
 ```
 
-### Common Error Codes
+Common error status codes:
+- 400: Bad Request - Invalid input parameters
+- 403: Forbidden - Invalid API key
+- 404: Not Found - Resource not found
+- 500: Internal Server Error - Unexpected server error
 
-| Status Code | Description |
-|-------------|-------------|
-| 400 | Bad Request - The request is malformed or contains invalid parameters |
-| 401 | Unauthorized - API key is missing |
-| 403 | Forbidden - API key is invalid |
-| 404 | Not Found - The requested resource does not exist |
-| 500 | Internal Server Error - An unexpected error occurred |
-| 503 | Service Unavailable - The service is temporarily unavailable (e.g., during maintenance or when a dependent service is down) |
+## API Usage Examples
 
-### Retry Strategy
+### Python Example
 
-For transient errors (status codes 429, 503), clients should implement an exponential backoff retry strategy.
+```python
+import requests
+import json
 
-## Docker Deployment
+API_URL = "http://localhost:8000"
+API_KEY = "your_api_key_here"
 
-When deploying with Docker, ensure that:
+headers = {
+    "X-API-Key": API_KEY,
+    "Content-Type": "application/json"
+}
 
-1. The `.env` file is mounted or environment variables are properly set
-2. The API port (default 8000) is mapped to the host
-3. Data volumes are mounted for persistence
+# Search for content
+search_data = {
+    "query": "How does Qdrant handle vector similarity search?",
+    "limit": 5,
+    "collection": "documentation"
+}
 
-Example Docker run command:
-```bash
-docker run -p 8000:8000 \
-  -v /path/to/data:/app/data \
-  -v /path/to/.env:/app/.env \
-  --name rag-api \
-  rag-content-retriever
+response = requests.post(f"{API_URL}/search", headers=headers, json=search_data)
+results = response.json()
+
+if results["success"]:
+    print(f"Found {len(results['data']['results'])} results:")
+    for idx, item in enumerate(results["data"]["results"], 1):
+        print(f"{idx}. {item['text'][:100]}... (score: {item['score']})")
+else:
+    print(f"Error: {results.get('error')}")
 ```
 
-## Testing the API
-
-You can use the included test scripts to verify API functionality:
+### cURL Example
 
 ```bash
-# Test all API endpoints
-python test_api.py
+# Search across all collections
+curl -X POST \
+  'http://localhost:8000/search' \
+  --header 'X-API-Key: your_api_key_here' \
+  --header 'Content-Type: application/json' \
+  --data-raw '{
+    "query": "Qdrant vector database features",
+    "limit": 10,
+    "search_all_collections": true
+  }'
 
-# Test only the stats endpoint with enhanced visualization
-python test_enhanced_stats.py
-
-# Test the dashboard endpoint with visualization
-python simple_dashboard_test.py
+# Create a new collection
+curl -X POST \
+  'http://localhost:8000/collections/new_collection' \
+  --header 'X-API-Key: your_api_key_here' \
+  --header 'Content-Type: application/json' \
+  --data-raw '{
+    "name": "new_collection",
+    "description": "New collection for demonstration",
+    "vector_size": 1024
+  }'
 ```

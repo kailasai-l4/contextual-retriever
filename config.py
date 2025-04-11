@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 
@@ -45,6 +45,29 @@ def get_qdrant_client(url: str = None, port: int = None) -> QdrantClient:
     
     return _qdrant_client_instance
 
+def get_collection_name(collection: str = None) -> str:
+    """
+    Get the collection name, either the provided one or the default from config
+
+    Args:
+        collection: Optional collection name to use
+
+    Returns:
+        Collection name
+    """
+    config = get_config()
+    return collection or config.get('qdrant', 'default_collection', default="content_library")
+
+def get_available_collections() -> List[str]:
+    """
+    Get all available collections configured in the system
+
+    Returns:
+        List of collection names
+    """
+    config = get_config()
+    return config.get('qdrant', 'collections', default=["content_library"])
+
 class Config:
     """Configuration manager for RAG Content Retriever that uses only environment variables"""
 
@@ -62,7 +85,9 @@ class Config:
         "qdrant": {
             "url": "qdrant",
             "port": 6333,
-            "collection_name": "content_library"
+            "default_collection": "content_library",
+            "collections": ["content_library"],
+            "vector_size": 1024
         },
         "chunking": {
             "max_chunk_tokens": 1000,
@@ -141,7 +166,9 @@ class Config:
             # Qdrant Configuration
             "QDRANT_URL": ["qdrant", "url"],
             "QDRANT_PORT": ["qdrant", "port"],
-            "COLLECTION_NAME": ["qdrant", "collection_name"],
+            "DEFAULT_COLLECTION": ["qdrant", "default_collection"],
+            "COLLECTIONS": ["qdrant", "collections"],  # Comma-separated list of collections
+            "VECTOR_SIZE": ["qdrant", "vector_size"],
             
             # Chunking Configuration
             "MAX_CHUNK_TOKENS": ["chunking", "max_chunk_tokens"],
@@ -168,9 +195,12 @@ class Config:
                 current = self.config
                 for i, path_part in enumerate(config_path):
                     if i == len(config_path) - 1:
-                        # Convert type if needed (handle integers, booleans)
+                        # Convert type if needed (handle integers, booleans, lists)
                         try:
-                            if isinstance(current[path_part], int):
+                            if path_part == "collections" and isinstance(env_value, str):
+                                # Handle collections as a comma-separated list
+                                current[path_part] = [c.strip() for c in env_value.split(',')]
+                            elif isinstance(current[path_part], int):
                                 current[path_part] = int(env_value)
                             elif isinstance(current[path_part], bool):
                                 current[path_part] = env_value.lower() in ['true', 'yes', '1', 'y']
@@ -181,6 +211,15 @@ class Config:
                             current[path_part] = env_value
                     else:
                         current = current[path_part]
+
+        # For backward compatibility
+        # If COLLECTION_NAME is set but COLLECTIONS or DEFAULT_COLLECTION is not
+        collection_name = os.environ.get("COLLECTION_NAME")
+        if collection_name:
+            if "collections" not in self.config["qdrant"] or not self.config["qdrant"]["collections"]:
+                self.config["qdrant"]["collections"] = [collection_name]
+            if "default_collection" not in self.config["qdrant"] or not self.config["qdrant"]["default_collection"]:
+                self.config["qdrant"]["default_collection"] = collection_name
 
     def get(self, *keys, default=None):
         """

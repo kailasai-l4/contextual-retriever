@@ -63,11 +63,27 @@ class SearchRequest(BaseModel):
     limit: Optional[int] = Field(20, description="Maximum number of results to return")
     use_optimized_retrieval: Optional[bool] = Field(True, description="Whether to use optimized retrieval strategy")
     filters: Optional[Dict[str, Any]] = Field(None, description="Filter criteria (e.g., {\"source_type\": \".md\"})")
+    collection: Optional[str] = Field(None, description="Specific collection to search")
+    search_all_collections: Optional[bool] = Field(False, description="Whether to search all available collections")
 
 class ProcessRequest(BaseModel):
     directory_path: str = Field(..., description="Path to directory containing documents")
     recursive: Optional[bool] = Field(True, description="Process directories recursively")
     file_types: Optional[List[str]] = Field(None, description="File extensions to process (e.g., [\".md\", \".json\"])")
+    collection: Optional[str] = Field(None, description="Target collection for processed documents")
+
+class BulkDataRequest(BaseModel):
+    data: List[Dict[str, Any]] = Field(..., description="List of data items to process")
+    collection: Optional[str] = Field(None, description="Target collection for processed data")
+
+class BulkEmbeddingRequest(BaseModel):
+    embeddings: List[Dict[str, Any]] = Field(..., description="List of embedding records with id, vector, and payload")
+    collection: Optional[str] = Field(None, description="Target collection for embeddings")
+
+class CollectionRequest(BaseModel):
+    name: str = Field(..., description="Name of the collection")
+    description: Optional[str] = Field(None, description="Description of the collection")
+    vector_size: Optional[int] = Field(None, description="Vector dimension size")
 
 class HealthResponse(BaseModel):
     status: str
@@ -99,7 +115,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # --- Dependencies ---
 
-def get_api_components():
+def get_api_components(collection: Optional[str] = None):
     """Creates and returns processor and retriever components with configuration"""
     config = get_config()
 
@@ -121,14 +137,16 @@ def get_api_components():
         jina_api_key=jina_key,
         gemini_api_key=gemini_key,
         qdrant_url=qdrant_url,
-        qdrant_port=qdrant_port
+        qdrant_port=qdrant_port,
+        collection=collection
     )
 
     retriever = AdvancedRetriever(
         jina_api_key=jina_key,
         gemini_api_key=gemini_key,
         qdrant_url=qdrant_url,
-        qdrant_port=qdrant_port
+        qdrant_port=qdrant_port,
+        collection=collection
     )
 
     return processor, retriever
@@ -210,6 +228,11 @@ async def root(api_key: str = Depends(get_api_key)):
             {"path": "/search", "method": "POST", "description": "Search for content"},
             {"path": "/process", "method": "POST", "description": "Process documents into vector database"},
             {"path": "/stats", "method": "GET", "description": "Get statistics about the vector database"},
+            {"path": "/collections", "method": "GET", "description": "List available collections"},
+            {"path": "/collections/{name}", "method": "POST", "description": "Create a new collection"},
+            {"path": "/collections/{name}", "method": "GET", "description": "Get collection details"},
+            {"path": "/bulk/process", "method": "POST", "description": "Process bulk data"},
+            {"path": "/bulk/embeddings", "method": "POST", "description": "Upload pre-computed embeddings"},
             {"path": "/sources/{source_id}", "method": "GET", "description": "Get all content from a specific source"},
             {"path": "/dashboard", "method": "GET", "description": "Get a comprehensive dashboard view of the database statistics"},
             {"path": "/health", "method": "GET", "description": "Health check endpoint for monitoring systems"},
@@ -228,6 +251,8 @@ async def search_content(request: SearchRequest, api_key: str = Depends(get_api_
     - limit: Maximum number of results to return
     - use_optimized_retrieval: Whether to use optimized retrieval strategy
     - filters: Filter criteria (e.g., {\"source_type\": \".md\"})
+    - collection: Specific collection to search
+    - search_all_collections: Whether to search all available collections
 
     Returns:
     - success: Whether the request was successful
@@ -238,7 +263,7 @@ async def search_content(request: SearchRequest, api_key: str = Depends(get_api_
     start_time = time.time()
 
     try:
-        _, retriever = get_api_components()
+        _, retriever = get_api_components(request.collection)
 
         if request.filters:
             results = retriever.filter_search(
@@ -251,7 +276,9 @@ async def search_content(request: SearchRequest, api_key: str = Depends(get_api_
             results = retriever.search(
                 query=request.query,
                 limit=request.limit,
-                use_optimized_retrieval=request.use_optimized_retrieval
+                use_optimized_retrieval=request.use_optimized_retrieval,
+                collection=request.collection,
+                search_all_collections=request.search_all_collections
             )
 
         duration_ms = (time.time() - start_time) * 1000
@@ -260,7 +287,9 @@ async def search_content(request: SearchRequest, api_key: str = Depends(get_api_
             data={
                 "query": request.query,
                 "count": len(results),
-                "results": results
+                "results": results,
+                "collections_searched": [request.collection] if request.collection else 
+                                     (retriever.available_collections if request.search_all_collections else [retriever.collection_name])
             },
             message=f"Found {len(results)} results",
             duration_ms=duration_ms
@@ -281,6 +310,7 @@ async def process_documents(request: ProcessRequest, background_tasks: Backgroun
     - directory_path: Path to directory containing documents
     - recursive: Process directories recursively
     - file_types: File extensions to process (e.g., [".md", ".json"])
+    - collection: Target collection for processed documents
 
     Returns:
     - success: Whether the request was started successfully
@@ -290,16 +320,21 @@ async def process_documents(request: ProcessRequest, background_tasks: Backgroun
     start_time = time.time()
 
     try:
-        processor, _ = get_api_components()
+        processor, _ = get_api_components(request.collection)
 
         # Define the background task
-        def process_task(path, recursive, file_types):
+        def process_task(path, recursive, file_types, collection=None):
             try:
-                logger.info(f"Starting background processing of {path}")
+                logger.info(f"Starting background processing of {path}" + 
+                           (f" to collection {collection}" if collection else ""))
 
                 # Convert file types to proper format
                 if file_types:
                     file_types = [ft if ft.startswith('.') else f'.{ft}' for ft in file_types]
+
+                # Set collection if specified
+                if collection and collection != processor.collection_name:
+                    processor.set_collection(collection)
 
                 # Process the directory
                 processor.process_directory(
@@ -317,7 +352,8 @@ async def process_documents(request: ProcessRequest, background_tasks: Backgroun
             process_task,
             request.directory_path,
             request.recursive,
-            request.file_types
+            request.file_types,
+            request.collection
         )
 
         duration_ms = (time.time() - start_time) * 1000
@@ -326,7 +362,8 @@ async def process_documents(request: ProcessRequest, background_tasks: Backgroun
             data={
                 "directory_path": request.directory_path,
                 "recursive": request.recursive,
-                "file_types": request.file_types
+                "file_types": request.file_types,
+                "collection": request.collection or processor.collection_name
             },
             message="Document processing started in the background",
             duration_ms=duration_ms
@@ -336,10 +373,157 @@ async def process_documents(request: ProcessRequest, background_tasks: Backgroun
         logger.error(f"Error starting document processing: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/bulk/process", response_model=ApiResponse)
+async def process_bulk_data(request: BulkDataRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
+    """
+    Process bulk data directly from structured content
+    
+    Parameters:
+    - data: List of data items to process. Each item should have at least 'text' field
+            and can optionally include 'metadata', 'source_id', etc.
+    - collection: Target collection for processed data
+            
+    Returns:
+    - success: Whether the request was started successfully
+    - data: Request details
+    - message: Information about the bulk processing task
+    """
+    start_time = time.time()
+    
+    try:
+        processor, _ = get_api_components(request.collection)
+        
+        # Validate data format
+        if not request.data:
+            raise HTTPException(status_code=400, detail="No data provided for processing")
+        
+        for i, item in enumerate(request.data):
+            if "text" not in item:
+                raise HTTPException(status_code=400, detail=f"Item at index {i} missing required 'text' field")
+        
+        # Process in background
+        def process_bulk_task(data, collection):
+            try:
+                logger.info(f"Starting bulk processing of {len(data)} items" +
+                           (f" to collection {collection}" if collection else ""))
+                
+                # Set collection if specified
+                if collection and collection != processor.collection_name:
+                    processor.set_collection(collection)
+                    
+                # Process the data
+                stats = processor.process_bulk_data(data, collection)
+                
+                logger.info(f"Completed bulk processing: {stats['successful_items']}/{stats['total_items']} items processed")
+            except Exception as e:
+                logger.error(f"Error during bulk processing: {str(e)}", exc_info=True)
+        
+        # Start background task
+        background_tasks.add_task(
+            process_bulk_task,
+            request.data,
+            request.collection
+        )
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data={
+                "items_count": len(request.data),
+                "collection": request.collection or processor.collection_name,
+                "task_id": f"bulk_{int(time.time())}"
+            },
+            message=f"Bulk processing of {len(request.data)} items started in the background",
+            duration_ms=duration_ms
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting bulk processing: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/bulk/embeddings", response_model=ApiResponse)
+async def upload_embeddings(request: BulkEmbeddingRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
+    """
+    Upload pre-computed embeddings directly to the database
+    
+    Parameters:
+    - embeddings: List of embedding records. Each record should have:
+                - 'id': Unique identifier for the point
+                - 'vector': Vector embedding (List[float])
+                - 'payload': Metadata to store with the vector
+    - collection: Target collection for embeddings
+            
+    Returns:
+    - success: Whether the request was started successfully
+    - data: Request details
+    - message: Information about the upload task
+    """
+    start_time = time.time()
+    
+    try:
+        processor, _ = get_api_components(request.collection)
+        
+        # Validate data format
+        if not request.embeddings:
+            raise HTTPException(status_code=400, detail="No embeddings provided for upload")
+        
+        for i, emb in enumerate(request.embeddings):
+            if "id" not in emb:
+                raise HTTPException(status_code=400, detail=f"Embedding at index {i} missing required 'id' field")
+            if "vector" not in emb:
+                raise HTTPException(status_code=400, detail=f"Embedding at index {i} missing required 'vector' field")
+        
+        # Process in background
+        def upload_embeddings_task(embeddings, collection):
+            try:
+                logger.info(f"Starting upload of {len(embeddings)} embeddings" +
+                           (f" to collection {collection}" if collection else ""))
+                
+                # Set collection if specified
+                if collection and collection != processor.collection_name:
+                    processor.set_collection(collection)
+                    
+                # Upload the embeddings
+                stats = processor.bulk_upload_embeddings(embeddings, collection)
+                
+                logger.info(f"Completed embeddings upload: {stats['successful_uploads']}/{stats['total_embeddings']} embeddings uploaded")
+            except Exception as e:
+                logger.error(f"Error during embeddings upload: {str(e)}", exc_info=True)
+        
+        # Start background task
+        background_tasks.add_task(
+            upload_embeddings_task,
+            request.embeddings,
+            request.collection
+        )
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data={
+                "embeddings_count": len(request.embeddings),
+                "collection": request.collection or processor.collection_name,
+                "task_id": f"emb_upload_{int(time.time())}"
+            },
+            message=f"Upload of {len(request.embeddings)} embeddings started in the background",
+            duration_ms=duration_ms
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting embeddings upload: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/stats", response_model=ApiResponse)
-async def get_stats(api_key: str = Depends(get_api_key)):
+async def get_stats(collection: Optional[str] = None, api_key: str = Depends(get_api_key)):
     """
     Get statistics about the vector database
+
+    Parameters:
+    - collection: Optional collection name to get stats for
 
     Returns:
     - success: Whether the request was successful
@@ -349,13 +533,18 @@ async def get_stats(api_key: str = Depends(get_api_key)):
     start_time = time.time()
 
     try:
-        processor, _ = get_api_components()
+        processor, _ = get_api_components(collection)
+        
+        # If collection is specified, set it
+        if collection and collection != processor.collection_name:
+            processor.set_collection(collection)
+            
         raw_stats = processor.get_collection_stats()
         
         # Format statistics in a more human-readable way
         stats = {
             "summary": {
-                "collection_name": raw_stats.get("collection_name", "content_library"),
+                "collection_name": raw_stats.get("collection_name", processor.collection_name),
                 "status": raw_stats.get("status", "unknown"),
                 "total_chunks": raw_stats.get("points_count", 0),
                 "unique_documents": raw_stats.get("unique_sources", 0),
@@ -364,7 +553,7 @@ async def get_stats(api_key: str = Depends(get_api_key)):
             "database_info": {
                 "vectors_count": raw_stats.get("vectors_count"),
                 "segments_count": raw_stats.get("segments_count"),
-                "vector_dimension": raw_stats.get("vector_dimension", 1024)
+                "vector_dimension": raw_stats.get("vector_dimension", processor.vector_size)
             },
             "content": {
                 "file_type_distribution": raw_stats.get("file_types", {}),
@@ -614,6 +803,206 @@ async def get_dashboard(api_key: str = Depends(get_api_key)):
 
     except Exception as e:
         logger.error(f"Error generating dashboard: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Collection Management ---
+
+@app.get("/collections", response_model=ApiResponse)
+async def list_collections(api_key: str = Depends(get_api_key)):
+    """
+    List all available collections
+    
+    Returns:
+        List of available collections with basic info
+    """
+    start_time = time.time()
+    
+    try:
+        # Get Qdrant client
+        qdrant_client = get_qdrant_client()
+        
+        # Get collections from Qdrant
+        collections_info = qdrant_client.get_collections().collections
+        
+        # Enhanced with details
+        collections = []
+        for coll in collections_info:
+            try:
+                # Get detailed info for each collection
+                details = qdrant_client.get_collection(coll.name)
+                
+                collections.append({
+                    "name": coll.name,
+                    "vectors_count": details.vectors_count,
+                    "points_count": details.points_count,
+                    "vector_size": details.config.params.vectors.size if hasattr(details.config, 'params') else None,
+                    "distance_metric": str(details.config.params.vectors.distance) if hasattr(details.config, 'params') else None
+                })
+            except Exception as e:
+                # Add basic info if detailed retrieval fails
+                collections.append({
+                    "name": coll.name,
+                    "error": str(e)
+                })
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data=collections,
+            message=f"Found {len(collections)} collections",
+            duration_ms=duration_ms
+        )
+        
+    except Exception as e:
+        logger.error(f"Error listing collections: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/collections/{name}", response_model=ApiResponse)
+async def create_collection(
+    name: str, 
+    request: CollectionRequest,
+    api_key: str = Depends(get_api_key)
+):
+    """
+    Create a new collection with specified parameters
+    
+    Parameters:
+    - name: Collection name
+    - vector_size: Size of vector embedding
+    
+    Returns:
+        Collection creation status
+    """
+    start_time = time.time()
+    
+    try:
+        processor, _ = get_api_components()
+        
+        # Use specified vector size or default from config
+        vector_size = request.vector_size or processor.vector_size
+        
+        # Create the collection
+        success = processor.set_collection(name)
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=success,
+            data={
+                "name": name,
+                "vector_size": vector_size,
+                "description": request.description
+            },
+            message=f"Collection '{name}' {'created or accessed successfully' if success else 'creation failed'}",
+            duration_ms=duration_ms
+        )
+        
+    except Exception as e:
+        logger.error(f"Error creating collection: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/collections/{name}", response_model=ApiResponse)
+async def get_collection(name: str, api_key: str = Depends(get_api_key)):
+    """
+    Get detailed information about a specific collection
+    
+    Parameters:
+    - name: Collection name
+    
+    Returns:
+        Detailed collection information
+    """
+    start_time = time.time()
+    
+    try:
+        # Get Qdrant client
+        qdrant_client = get_qdrant_client()
+        
+        if not qdrant_client.collection_exists(name):
+            raise HTTPException(status_code=404, detail=f"Collection '{name}' not found")
+        
+        # Get collection details
+        details = qdrant_client.get_collection(name)
+        
+        # Sample a few points to get payload schema
+        try:
+            sample = qdrant_client.scroll(
+                collection_name=name,
+                limit=1,
+                with_payload=True,
+                with_vectors=False
+            )
+            sample_points = sample[0] if isinstance(sample, tuple) else []
+            
+            # Extract payload schema from sample if available
+            payload_schema = {}
+            if sample_points and hasattr(sample_points[0], 'payload'):
+                payload = sample_points[0].payload
+                payload_schema = {k: type(v).__name__ for k, v in payload.items()}
+        except Exception as e:
+            logger.warning(f"Error sampling collection points: {str(e)}")
+            payload_schema = {"error": str(e)}
+        
+        # Format collection info
+        collection_info = {
+            "name": name,
+            "vectors_count": details.vectors_count,
+            "points_count": details.points_count,
+            "vector_size": details.config.params.vectors.size if hasattr(details.config, 'params') else None,
+            "distance_metric": str(details.config.params.vectors.distance) if hasattr(details.config, 'params') else None,
+            "segments_count": details.segments_count,
+            "payload_schema": payload_schema,
+            "status": "available" if details.status == "green" else details.status
+        }
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data=collection_info,
+            message=f"Collection '{name}' details retrieved",
+            duration_ms=duration_ms
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting collection details: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/collections/{name}", response_model=ApiResponse)
+async def delete_collection(name: str, api_key: str = Depends(get_api_key)):
+    """
+    Delete a collection
+    
+    Parameters:
+    - name: Collection name
+    
+    Returns:
+        Deletion status
+    """
+    start_time = time.time()
+    
+    try:
+        # Get Qdrant client
+        qdrant_client = get_qdrant_client()
+        
+        if not qdrant_client.collection_exists(name):
+            raise HTTPException(status_code=404, detail=f"Collection '{name}' not found")
+        
+        # Delete the collection
+        qdrant_client.delete_collection(name)
+        
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data={"name": name},
+            message=f"Collection '{name}' deleted successfully",
+            duration_ms=duration_ms
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting collection: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Server ---

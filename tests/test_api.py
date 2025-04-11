@@ -1,99 +1,89 @@
-#!/usr/bin/env python3
-"""
-API Tester
------------
-Test script for validating the RAG Content Retriever API functionality.
-"""
-
-import os
-import sys
-import time
-import json
 import requests
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+import json
+import time
 
 # Configuration
-API_KEY = os.environ.get("API_KEY")
-BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
-HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
+BASE_URL = "http://localhost:8001"  # Change if your API runs on a different port
+API_KEY = "581e2e5fc4ed201bca765731798f4834f8424a129b8a5a4722c292cf3a13cfe8"  # From your .env
 
-def print_result(endpoint, response):
-    """Print test result"""
-    print(f"\n===== {endpoint} =====")
+headers = {
+    "X-API-Key": API_KEY,
+    "Content-Type": "application/json"
+}
+
+def print_response(title, response):
+    print(f"\n=== {title} ===")
     print(f"Status: {response.status_code}")
     try:
         print(json.dumps(response.json(), indent=2))
     except:
-        print(response.text[:200] + "..." if len(response.text) > 200 else response.text)
-    print("-" * 50)
+        print(response.text)
 
-def test_endpoint(method, endpoint, payload=None, expected_status=200):
-    """Test an API endpoint"""
-    url = f"{BASE_URL}{endpoint}"
-    
-    print(f"Testing {method} {endpoint}...")
-    
-    try:
-        if method.upper() == "GET":
-            response = requests.get(url, headers=HEADERS)
-        elif method.upper() == "POST":
-            response = requests.post(url, headers=HEADERS, json=payload)
-        else:
-            print(f"Unsupported method: {method}")
-            return False
-            
-        print_result(endpoint, response)
-        
-        if response.status_code == expected_status:
-            print(f"✅ Success: {endpoint}")
-            return response.json() if response.status_code == 200 else None
-        else:
-            print(f"❌ Failed: Expected status {expected_status}, got {response.status_code}")
-            return None
-    except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        return None
+# Test 1: Health check (first test to make sure API is running)
+response = requests.get(f"{BASE_URL}/health")
+print_response("1. Health check", response)
 
-def main():
-    """Run all API tests"""
-    print(f"Testing API at {BASE_URL}")
-    print(f"Using API Key: {'Yes' if API_KEY else 'No'}")
-    
-    # Test the health endpoint (doesn't require API key)
-    test_endpoint("GET", "/health")
-    
-    # Test the readiness endpoint (doesn't require API key)
-    test_endpoint("GET", "/readiness")
-    
-    # Test the liveness endpoint (doesn't require API key)
-    test_endpoint("GET", "/liveness")
-    
-    # The following endpoints require API key
-    if not API_KEY:
-        print("⚠️ Warning: No API Key provided. Skipping protected endpoints.")
-        return
-    
-    # Test the root endpoint
-    test_endpoint("GET", "/")
-    
-    # Test search endpoint
-    payload = {
-        "query": "test query",
-        "limit": 5,
-        "use_optimized_retrieval": True
-    }
-    results = test_endpoint("POST", "/search", payload)
-    
-    # Test stats endpoint
-    test_endpoint("GET", "/stats")
-    
-    # Test dashboard endpoint
-    test_endpoint("GET", "/dashboard")
+# Test 2: List collections via our API
+response = requests.get(f"{BASE_URL}/collections", headers=headers)
+print_response("2. List collections", response)
 
-    print("\nAPI Test completed.")
+# Test 3: Create test collection
+collection_name = "test_collection"
+create_data = {
+    "name": collection_name,
+    "description": "Test collection for API testing",
+    "vector_size": 1024
+}
+response = requests.post(f"{BASE_URL}/collections/{collection_name}", 
+                        headers=headers, 
+                        json=create_data)
+print_response("3. Create collection", response)
 
-if __name__ == "__main__":
-    main()
+# Test 4: Get collection details
+response = requests.get(f"{BASE_URL}/collections/{collection_name}", headers=headers)
+print_response("4. Get collection details", response)
+
+# Test 5: Add data using bulk upload
+bulk_data = {
+    "data": [
+        {
+            "text": "Qdrant is a vector database for similarity search",
+            "metadata": {"source": "test"}
+        },
+        {
+            "text": "Vector embeddings are useful for semantic search",
+            "metadata": {"source": "test"}
+        }
+    ],
+    "collection": collection_name
+}
+response = requests.post(f"{BASE_URL}/bulk/process", headers=headers, json=bulk_data)
+print_response("5. Bulk process data", response)
+
+# Wait for processing
+print("\nWaiting 10 seconds for processing...")
+time.sleep(10)
+
+# Test 6: Get stats for collection
+response = requests.get(f"{BASE_URL}/stats?collection={collection_name}", headers=headers)
+print_response("6. Get collection stats", response)
+
+# Test 7: Search the collection
+search_data = {
+    "query": "vector database",
+    "collection": collection_name
+}
+response = requests.post(f"{BASE_URL}/search", headers=headers, json=search_data)
+print_response("7. Search in collection", response)
+
+# Test 8: Search across all collections
+search_all = {
+    "query": "vector database",
+    "search_all_collections": True
+}
+response = requests.post(f"{BASE_URL}/search", headers=headers, json=search_all)
+print_response("8. Search all collections", response)
+
+# Test 9: Clean up - delete collection
+response = requests.delete(f"{BASE_URL}/collections/{collection_name}", headers=headers)
+print_response("9. Delete collection", response)

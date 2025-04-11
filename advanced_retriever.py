@@ -30,7 +30,8 @@ class AdvancedRetriever:
                  gemini_api_key: str,
                  qdrant_url: str = "localhost",
                  qdrant_port: int = 6333,
-                 config_path: str = None):
+                 config_path: str = None,
+                 collection: str = None):
         """
         Initialize the advanced retriever
 
@@ -40,6 +41,7 @@ class AdvancedRetriever:
             qdrant_url: URL for Qdrant vector database
             qdrant_port: Port for Qdrant vector database
             config_path: Path to configuration file
+            collection: Name of the collection to use (defaults to config's default collection)
         """
         # Load configuration
         self.config = get_config(config_path)
@@ -47,8 +49,12 @@ class AdvancedRetriever:
         # API keys
         self.jina_api_key = jina_api_key
 
-        # Collection name from config
-        self.collection_name = self.config.get('qdrant', 'collection_name', default="content_library")
+        # Get collection name
+        self.default_collection = self.config.get('qdrant', 'default_collection', default="content_library")
+        self.collection_name = collection or self.default_collection
+
+        # Available collections
+        self.available_collections = self.config.get('qdrant', 'collections', default=[self.default_collection])
 
         # Get retrieval parameters from config
         self.max_chunk_tokens = self.config.get('retrieval', 'max_consolidated_tokens', default=4000)
@@ -76,32 +82,56 @@ class AdvancedRetriever:
         log_level = getattr(logging, self.config.get('logging', 'level', default="INFO"))
         logger.setLevel(log_level)
 
-        logger.debug(f"Advanced Retriever initialized with Qdrant at {qdrant_url}:{qdrant_port}")
+        logger.debug(f"Advanced Retriever initialized with Qdrant at {qdrant_url}:{qdrant_port}, collection: {self.collection_name}")
 
         # Check if collection exists and has data
-        self._check_qdrant_collection()
+        self._check_qdrant_collection(self.collection_name)
+
+    def set_collection(self, collection_name: str) -> bool:
+        """
+        Change the active collection
+
+        Args:
+            collection_name: Name of the collection to use
+
+        Returns:
+            bool: True if collection exists and was set, False otherwise
+        """
+        if self._check_qdrant_collection(collection_name):
+            self.collection_name = collection_name
+            logger.info(f"Switched to collection: {collection_name}")
+            return True
+        return False
 
     @backoff.on_exception(backoff.expo, Exception, max_tries=3, jitter=backoff.full_jitter)
-    def _check_qdrant_collection(self) -> bool:
-        """Check if Qdrant collection exists and has vectors with improved error handling"""
+    def _check_qdrant_collection(self, collection_name: str) -> bool:
+        """
+        Check if Qdrant collection exists and has vectors with improved error handling
+
+        Args:
+            collection_name: Name of the collection to check
+
+        Returns:
+            bool: True if collection exists and has data, False otherwise
+        """
         try:
             # Check if collection exists
-            if not self.client.collection_exists(self.collection_name):
-                logger.warning(f"Collection '{self.collection_name}' does not exist")
+            if not self.client.collection_exists(collection_name):
+                logger.warning(f"Collection '{collection_name}' does not exist")
                 return False
 
             # Get collection info
-            collection_info = self.client.get_collection(self.collection_name)
+            collection_info = self.client.get_collection(collection_name)
             logger.debug(f"Collection info: vectors_count={collection_info.vectors_count}, points_count={collection_info.points_count}")
 
             if collection_info.vectors_count == 0:
-                logger.warning(f"Collection '{self.collection_name}' is empty (0 vectors)")
+                logger.warning(f"Collection '{collection_name}' is empty (0 vectors)")
                 return False
 
             # Try to get a sample point to verify access
             try:
                 scroll_results = self.client.scroll(
-                    collection_name=self.collection_name,
+                    collection_name=collection_name,
                     limit=1,
                     with_payload=True,
                     with_vectors=False
@@ -125,7 +155,7 @@ class AdvancedRetriever:
 
                 # Check if we got any results
                 if not points:
-                    logger.warning(f"No points found in collection '{self.collection_name}'")
+                    logger.warning(f"No points found in collection '{collection_name}'")
                     return False
 
                 logger.debug(f"Successfully retrieved sample point from collection")
@@ -140,7 +170,8 @@ class AdvancedRetriever:
             return False
 
     @backoff.on_exception(backoff.expo, Exception, max_tries=3, jitter=backoff.full_jitter)
-    def search(self, query: str, limit: int = 20, use_optimized_retrieval: bool = True) -> List[Dict[str, Any]]:
+    def search(self, query: str, limit: int = 20, use_optimized_retrieval: bool = True, 
+               collection: str = None, search_all_collections: bool = False) -> List[Dict[str, Any]]:
         """
         Search for content with advanced optimization options
 
@@ -148,49 +179,81 @@ class AdvancedRetriever:
             query: Search query
             limit: Maximum number of results to return
             use_optimized_retrieval: Whether to use optimized retrieval strategy
+            collection: Optional specific collection to search
+            search_all_collections: Whether to search all available collections
 
         Returns:
             List of content chunks
         """
         logger.debug(f"Search initiated: query='{query}', limit={limit}, optimized={use_optimized_retrieval}")
 
-        # Check if Qdrant collection exists
-        try:
-            collection_exists = self.client.collection_exists(self.collection_name)
-            logger.debug(f"Collection '{self.collection_name}' exists: {collection_exists}")
+        # Determine which collections to search
+        collections_to_search = []
+        if search_all_collections:
+            # Get available collections from config
+            collections_to_search = self.available_collections
+        else:
+            # Use specified collection or default
+            target_collection = collection or self.collection_name
+            collections_to_search = [target_collection]
 
-            if not collection_exists:
-                logger.warning(f"Collection '{self.collection_name}' does not exist. No results will be returned.")
-                return []
-
-            # Get collection info
-            try:
-                collection_info = self.client.get_collection(self.collection_name)
-                logger.debug(f"Collection info: vectors_count={collection_info.vectors_count}, points_count={collection_info.points_count}")
-
-                if collection_info.vectors_count == 0:
-                    logger.warning("Collection is empty. No results will be returned.")
-                    return []
-            except Exception as e:
-                logger.error(f"Error getting collection info: {str(e)}", exc_info=True)
-        except Exception as e:
-            logger.error(f"Error checking if collection exists: {str(e)}", exc_info=True)
+        # If no collections to search, return empty results
+        if not collections_to_search:
+            logger.warning("No collections available to search")
             return []
 
-        if use_optimized_retrieval:
-            # Use the full optimization strategy
-            logger.debug("Using optimized retrieval strategy")
+        logger.debug(f"Searching collections: {collections_to_search}")
+
+        # Search each collection and merge results
+        all_results = []
+        for coll_name in collections_to_search:
+            # Skip collections that don't exist
+            if not self.client.collection_exists(coll_name):
+                logger.warning(f"Collection '{coll_name}' does not exist. Skipping.")
+                continue
+
             try:
-                result = self.retrieve_optimized_content(query, limit)
-                return result["chunks"]
+                # Get collection info
+                collection_info = self.client.get_collection(coll_name)
+                
+                if collection_info.vectors_count == 0:
+                    logger.warning(f"Collection '{coll_name}' is empty. Skipping.")
+                    continue
+                
+                # Set temporary collection name
+                orig_collection = self.collection_name
+                self.collection_name = coll_name
+                
+                # Perform search
+                if use_optimized_retrieval:
+                    try:
+                        result = self.retrieve_optimized_content(query, limit)
+                        collection_results = result["chunks"]
+                    except Exception as e:
+                        logger.error(f"Error in optimized retrieval for collection '{coll_name}': {str(e)}", exc_info=True)
+                        logger.info(f"Falling back to standard search for collection '{coll_name}'")
+                        collection_results = self._simple_search(query, limit=limit, use_expansion=True)
+                else:
+                    collection_results = self._simple_search(query, limit=limit, use_expansion=True)
+                
+                # Add collection name to results
+                for item in collection_results:
+                    item["collection"] = coll_name
+                
+                all_results.extend(collection_results)
+                
+                # Restore original collection name
+                self.collection_name = orig_collection
+                
             except Exception as e:
-                logger.error(f"Error in optimized retrieval: {str(e)}", exc_info=True)
-                logger.info("Falling back to standard search due to error")
-                return self._simple_search(query, limit=limit, use_expansion=True)
-        else:
-            # Use standard search
-            logger.debug("Using standard search strategy")
-            return self._simple_search(query, limit=limit, use_expansion=True)
+                logger.error(f"Error searching collection '{coll_name}': {str(e)}", exc_info=True)
+                continue
+
+        # Sort combined results by score
+        all_results.sort(key=lambda x: x.get("rerank_score", x.get("score", 0)), reverse=True)
+        
+        # Limit to requested number
+        return all_results[:limit]
 
     def _simple_search(self, query: str, limit: int = 100, use_expansion: bool = True):
         """
