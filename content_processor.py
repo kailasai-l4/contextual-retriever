@@ -367,7 +367,7 @@ class ContentProcessor:
                     logger.warning(f"Failed to parse frontmatter in {file_path}: {str(e)}")
 
             # Create semantic chunks using Jina Segmenter
-            chunks = self._create_semantic_chunks(text, metadata)
+            chunks = self._create_semantic_chunks(text, metadata, file_path)
             return chunks
         except Exception as e:
             logger.error(f"Error processing markdown file {file_path}: {str(e)}", exc_info=True)
@@ -389,7 +389,8 @@ class ContentProcessor:
                     # Create chunks with metadata
                     field_chunks = self._create_semantic_chunks(
                         text,
-                        {"json_field": field_name, "source_structure": "object"}
+                        {"json_field": field_name, "source_structure": "object"},
+                        file_path
                     )
                     chunks.extend(field_chunks)
 
@@ -401,14 +402,16 @@ class ContentProcessor:
                         for field_name, text in texts:
                             field_chunks = self._create_semantic_chunks(
                                 text,
-                                {"json_index": i, "json_field": field_name, "source_structure": "array"}
+                                {"json_index": i, "json_field": field_name, "source_structure": "array"},
+                                file_path
                             )
                             chunks.extend(field_chunks)
                     elif isinstance(item, str) and len(item.strip()) > 0:
                         # Direct text in array
                         chunks.extend(self._create_semantic_chunks(
                             item,
-                            {"json_index": i, "source_structure": "array"}
+                            {"json_index": i, "source_structure": "array"},
+                            file_path
                         ))
 
             return chunks
@@ -458,7 +461,8 @@ class ContentProcessor:
                             for field_name, text in texts:
                                 field_chunks = self._create_semantic_chunks(
                                     text,
-                                    {"jsonl_line": i, "json_field": field_name}
+                                    {"jsonl_line": i, "json_field": field_name},
+                                    file_path
                                 )
                                 chunks.extend(field_chunks)
                     except json.JSONDecodeError:
@@ -477,7 +481,7 @@ class ContentProcessor:
                 content = f.read()
 
             # Create semantic chunks
-            chunks = self._create_semantic_chunks(content, {})
+            chunks = self._create_semantic_chunks(content, {}, file_path)
             return chunks
         except Exception as e:
             logger.error(f"Error processing text file {file_path}: {str(e)}", exc_info=True)
@@ -497,7 +501,8 @@ class ContentProcessor:
                 if row_text.strip():
                     chunks.extend(self._create_semantic_chunks(
                         row_text,
-                        {"csv_row": i, "columns": list(df.columns)}
+                        {"csv_row": i, "columns": list(df.columns)},
+                        file_path
                     ))
 
             # Also process columns with substantial text
@@ -509,7 +514,8 @@ class ContentProcessor:
                         col_text = "\n".join(texts)
                         chunks.extend(self._create_semantic_chunks(
                             col_text,
-                            {"csv_column": col}
+                            {"csv_column": col},
+                            file_path
                         ))
 
             return chunks
@@ -531,7 +537,8 @@ class ContentProcessor:
                 for field_name, text in texts:
                     field_chunks = self._create_semantic_chunks(
                         text,
-                        {"yaml_field": field_name}
+                        {"yaml_field": field_name},
+                        file_path
                     )
                     chunks.extend(field_chunks)
 
@@ -540,13 +547,14 @@ class ContentProcessor:
             logger.error(f"Error processing YAML {file_path}: {str(e)}", exc_info=True)
             return []
 
-    def _create_semantic_chunks(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _create_semantic_chunks(self, text: str, metadata: Dict[str, Any], file_path: str) -> List[Dict[str, Any]]:
         """
         Create semantic chunks from text using Jina Segmenter API
 
         Args:
             text: Text to chunk
             metadata: Metadata to attach to each chunk
+            file_path: Path of the original file (for fallback chunk IDs)
 
         Returns:
             List of chunk objects with text and metadata
@@ -580,9 +588,9 @@ class ContentProcessor:
                     response_text = response.text
 
                 logger.warning(f"Segmenter API error: {response.status_code} {response_text}")
-                # Fall back to simple chunking
+                # Fall back to simple chunking, passing the file_path
                 logger.info("Progress: Falling back to simple chunking due to Segmenter API error")
-                return self._fallback_chunking(text, metadata)
+                return self._fallback_chunking(text, file_path)
 
             result = response.json()
             chunks = result.get("chunks", [])
@@ -595,23 +603,6 @@ class ContentProcessor:
                 if len(chunk_text.split()) < 20:
                     continue
 
-                # Create overlap for consecutive chunks
-                if i > 0:
-                    # Extract end of previous chunk and start of current chunk
-                    overlap_start = chunks[i-1][-self.chunk_overlap_tokens:]
-                    overlap_end = chunk_text[:self.chunk_overlap_tokens]
-                    overlap_text = overlap_start + overlap_end
-
-                    # Create an overlap chunk
-                    chunk_objects.append({
-                        "text": overlap_text,
-                        "is_overlap": True,
-                        "chunk_index": i - 0.5,
-                        "metadata": metadata.copy(),
-                        "estimated_tokens": len(overlap_text.split()) * 1.3,
-                        "keywords": self._extract_keywords(overlap_text)
-                    })
-
                 # Add the main chunk
                 chunk_objects.append({
                     "text": chunk_text,
@@ -619,16 +610,15 @@ class ContentProcessor:
                     "chunk_index": i,
                     "metadata": metadata.copy(),
                     "estimated_tokens": len(chunk_text.split()) * 1.3,
-                    "keywords": self._extract_keywords(chunk_text)
                 })
 
             return chunk_objects
 
         except Exception as e:
             logger.error(f"Error during semantic chunking: {str(e)}", exc_info=True)
-            return self._fallback_chunking(text, metadata)
+            return self._fallback_chunking(text, file_path)
 
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3, jitter=backoff.full_jitter)
+    @backoff.on_exception(backoff.expo, backoff.expo, max_tries=3, jitter=backoff.full_jitter)
     def _segment_content(self, content: str, file_path: str) -> List[Dict[str, Any]]:
         """
         Segment content into chunks using Jina's API with improved error handling
@@ -645,16 +635,23 @@ class ContentProcessor:
         max_api_size = 60000  # 60KB, safely under Jina's 64KB limit
         
         if content_size > max_api_size:
-            logger.info(f"Content too large for segmenter API ({content_size} bytes), splitting into smaller parts")
+            logger.info(f"Content too large for segmenter API ({content_size} bytes), falling back to simple chunking")
             return self._fallback_chunking(content, file_path)
         
         try:
             # Attempt to use Jina's segmenter API
-            segments = self._call_segmenter_api(content)
-            return segments
+            # This was a conceptual method, the actual call happens in _create_semantic_chunks
+            # We should directly call _create_semantic_chunks here, which handles the API call and fallback
+            # This method seems redundant now, let's simplify by removing it or calling _create_semantic_chunks directly where needed.
+            # For now, assuming _create_semantic_chunks is the main entry point --- 
+            # If _segment_content is called directly, it should use the fallback
+            logger.warning("_segment_content called directly, using fallback chunking.")
+            return self._fallback_chunking(content, file_path)
+
         except Exception as e:
-            logger.warning(f"Segmenter API error: {str(e)}")
-            logger.info("Progress: Falling back to simple chunking due to Segmenter API error")
+            # This block might be redundant if _create_semantic_chunks handles the main logic + fallback
+            logger.warning(f"Segmenter API error in _segment_content: {str(e)}")
+            logger.info("Progress: Falling back to simple chunking due to Segmenter API error in _segment_content")
             return self._fallback_chunking(content, file_path)
             
     def _fallback_chunking(self, content: str, file_path: str) -> List[Dict[str, Any]]:
@@ -683,7 +680,8 @@ class ContentProcessor:
             # If adding this paragraph would exceed the chunk size, save the current chunk
             if current_token_count + para_token_count > self.chunk_max_tokens and current_chunk:
                 chunks.append({
-                    "chunk_id": f"{Path(file_path).stem}-{chunk_id}",
+                    # Cast file_path to str to handle potential type issues
+                    "chunk_id": f"{Path(str(file_path)).stem}-{chunk_id}",
                     "text": current_chunk.strip(),
                     "token_count": current_token_count
                 })
@@ -697,7 +695,8 @@ class ContentProcessor:
         # Add the last chunk if it has content
         if current_chunk:
             chunks.append({
-                "chunk_id": f"{Path(file_path).stem}-{chunk_id}",
+                # Cast file_path to str to handle potential type issues
+                "chunk_id": f"{Path(str(file_path)).stem}-{chunk_id}",
                 "text": current_chunk.strip(),
                 "token_count": current_token_count
             })
@@ -729,58 +728,246 @@ class ContentProcessor:
             # Extract texts for embedding
             texts = [chunk["text"] for chunk in batch]
             chunk_ids = [chunk["chunk_id"] for chunk in batch]
-            
+            batch_chunks = {chunk["chunk_id"]: chunk for chunk in batch} # Map chunk_id to chunk data for easier access
+
             try:
-                # Generate embeddings
+                # Generate embeddings for the batch
                 embeddings = self._generate_embeddings(texts)
                 
                 if len(embeddings) != len(batch):
-                    logger.error(f"Mismatch in embedding count: got {len(embeddings)}, expected {len(batch)}")
-                    continue
+                    logger.error(f"Mismatch in embedding count for batch starting at {i}: got {len(embeddings)}, expected {len(batch)}")
+                    continue # Skip this batch
                 
                 # Create points for Qdrant
-                points = []
-                for j, (emb, chunk) in enumerate(zip(embeddings, batch)):
-                    # Convert chunk_id to a deterministic UUID for Qdrant
+                points_to_upsert = []
+                successfully_embedded_ids = set()
+
+                for j, (emb, chunk_id) in enumerate(zip(embeddings, chunk_ids)):
+                    chunk = batch_chunks[chunk_id]
                     try:
-                        point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, chunk["chunk_id"]))
+                        point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, chunk_id))
                     except Exception:
-                        # Fallback to a direct hash if uuid5 fails
-                        point_id = hashlib.md5(chunk["chunk_id"].encode('utf-8')).hexdigest()
+                        point_id = hashlib.md5(chunk_id.encode('utf-8')).hexdigest()
                     
-                    # Add to batch
-                    points.append(models.PointStruct(
+                    points_to_upsert.append(models.PointStruct(
                         id=point_id,
                         vector=emb,
                         payload=chunk
                     ))
+                    successfully_embedded_ids.add(chunk_id)
                 
-                # Store in Qdrant
-                try:
-                    self.client.upsert(
-                        collection_name=target_collection,
-                        points=points
-                    )
-                    
-                    # Update embedded status
-                    for chunk_id in chunk_ids:
-                        self.embedded_chunks[chunk_id] = True
-                    
-                    # Save checkpoint after each batch
-                    if i % (batch_size * 5) == 0:
-                        self._save_state()
+                # Upsert successful points from the batch
+                if points_to_upsert:
+                    try:
+                        upsert_result = self.client.upsert(
+                            collection_name=target_collection,
+                            points=points_to_upsert,
+                            wait=True 
+                        )
+                        logger.debug(f"Upsert result for batch {i//batch_size}: {upsert_result}")
                         
-                except Exception as e:
-                    logger.error(f"Error upserting batch to Qdrant: {str(e)}", exc_info=True)
-                    continue
-                    
+                        if upsert_result.status == models.UpdateStatus.COMPLETED:
+                            for chunk_id in successfully_embedded_ids:
+                                self.embedded_chunks[chunk_id] = True
+                            self._save_state()
+                        else:
+                            logger.error(f"Qdrant upsert failed for batch starting at index {i}. Status: {upsert_result.status}")
+                            # Note: State for successfully embedded points in this batch is not updated if upsert fails overall
+
+                    except Exception as upsert_err:
+                        logger.error(f"Error during Qdrant upsert for batch starting at index {i}: {str(upsert_err)}", exc_info=True)
+                        # Note: State not updated for this batch on upsert error
+
             except Exception as e:
-                logger.error(f"Error processing batch: {str(e)}", exc_info=True)
-                continue
-                
-        # Final save
+                # Check if it's the Jina token limit error
+                error_message = str(e)
+                if "cannot exceed 8194 tokens" in error_message:
+                    logger.warning(f"Batch embedding failed due to Jina token limit (batch starting at {i}): {error_message}. Retrying chunks individually...")
+                    
+                    # Retry each chunk in the failed batch individually
+                    points_to_upsert_individual = []
+                    individually_embedded_ids = set()
+
+                    for k, (text, chunk_id) in enumerate(zip(texts, chunk_ids)):
+                        chunk = batch_chunks[chunk_id]
+                        try:
+                            # Try embedding the single chunk
+                            single_embedding = self._generate_embeddings([text])
+
+                            # Process successful single embedding
+                            try:
+                                point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, chunk_id))
+                            except Exception:
+                                point_id = hashlib.md5(chunk_id.encode('utf-8')).hexdigest()
+                            
+                            points_to_upsert_individual.append(models.PointStruct(
+                                id=point_id,
+                                vector=single_embedding[0],
+                                payload=chunk
+                            ))
+                            individually_embedded_ids.add(chunk_id)
+                            logger.info(f"Successfully embedded oversized chunk {chunk_id} individually.")
+
+                        except Exception as individual_e:
+                            individual_error_message = str(individual_e)
+                            if "cannot exceed 8194 tokens" in individual_error_message:
+                                # Individual chunk is *still* too large, requires re-chunking
+                                logger.error(f"Chunk {chunk_id} ({len(text)} chars) exceeds Jina token limit even individually. Attempting MULTI-LEVEL emergency splitting.")
+                                try:
+                                    # --- MULTI-LEVEL Emergency Splitting Logic --- 
+                                    safe_char_limit = 15000 # Keep well below Jina's likely token limit equivalent
+                                    final_sub_chunks_texts = []
+                                    current_sub_chunk = ""
+
+                                    # 1. Split by paragraphs
+                                    paragraphs = [p for p in text.split('\n\n') if p.strip()]
+
+                                    for para_idx, para in enumerate(paragraphs):
+                                        para_len = len(para)
+
+                                        # Check if the current paragraph itself exceeds the limit
+                                        if para_len > safe_char_limit:
+                                            logger.warning(f"Paragraph {para_idx} in chunk {chunk_id} ({para_len} chars) exceeds safe limit. Splitting by sentences.")
+                                            # If a single paragraph is too long, split it by sentences
+                                            sentences = re.split(r'(?<=[.!?])\s+', para) # Split by sentences
+                                            temp_sentence_chunk = ""
+                                            for sent_idx, sentence in enumerate(sentences):
+                                                sent_len = len(sentence)
+                                                if sent_len > safe_char_limit:
+                                                    # If a single sentence is too long, split by characters
+                                                    logger.warning(f"Sentence {sent_idx} in para {para_idx} ({sent_len} chars) exceeds safe limit. Splitting by characters.")
+                                                    for char_start in range(0, sent_len, safe_char_limit):
+                                                        char_chunk = sentence[char_start:char_start + safe_char_limit]
+                                                        # Add this character chunk as a new sub-chunk directly
+                                                        if current_sub_chunk: # Add previous accumulated chunk first
+                                                            final_sub_chunks_texts.append(current_sub_chunk.strip())
+                                                        final_sub_chunks_texts.append(char_chunk) 
+                                                        current_sub_chunk = "" # Reset accumulator
+                                                elif len(temp_sentence_chunk) + sent_len + 1 > safe_char_limit:
+                                                    # Add accumulated sentence chunk
+                                                    if current_sub_chunk: # Add previous accumulated chunk first
+                                                         final_sub_chunks_texts.append(current_sub_chunk.strip())
+                                                    final_sub_chunks_texts.append(temp_sentence_chunk.strip())
+                                                    current_sub_chunk = "" # Reset accumulator
+                                                    temp_sentence_chunk = sentence
+                                                else:
+                                                    temp_sentence_chunk += " " + sentence if temp_sentence_chunk else sentence
+                                            # Add any remaining sentence chunk
+                                            if temp_sentence_chunk:
+                                                 if current_sub_chunk: # Add previous accumulated chunk first
+                                                     final_sub_chunks_texts.append(current_sub_chunk.strip())
+                                                 final_sub_chunks_texts.append(temp_sentence_chunk.strip())
+                                                 current_sub_chunk = "" # Reset accumulator
+
+                                        # Paragraph is within limit, add to current_sub_chunk
+                                        elif len(current_sub_chunk) + para_len + 2 > safe_char_limit and current_sub_chunk:
+                                            # Current sub_chunk is full, add it and start new one
+                                            final_sub_chunks_texts.append(current_sub_chunk.strip())
+                                            current_sub_chunk = para
+                                        else:
+                                            # Add paragraph to current sub_chunk
+                                            current_sub_chunk += "\n\n" + para if current_sub_chunk else para
+                                    
+                                    # Add the last accumulated sub_chunk if it has content
+                                    if current_sub_chunk:
+                                        final_sub_chunks_texts.append(current_sub_chunk.strip())
+                                    # --- End MULTI-LEVEL Emergency Splitting --- 
+
+                                    if not final_sub_chunks_texts:
+                                        logger.error(f"Multi-level emergency splitting failed to produce sub-chunks for {chunk_id}")
+                                        continue # Skip this problematic chunk
+
+                                    logger.info(f"Multi-level emergency splitting created {len(final_sub_chunks_texts)} sub-chunks for oversized chunk {chunk_id}. Embedding them now...")
+
+                                    # Prepare sub-chunk data for embedding
+                                    sub_points = []
+                                    sub_embedded_ids = set()
+                                    sub_chunk_ids_new = [f"{chunk_id}_sub{idx}" for idx in range(len(final_sub_chunks_texts))] # Generate new IDs
+
+                                    try:
+                                        sub_embeddings = self._generate_embeddings(final_sub_chunks_texts)
+                                        if len(sub_embeddings) == len(final_sub_chunks_texts):
+                                            for sub_j, sub_emb in enumerate(sub_embeddings):
+                                                # Create payload for sub-chunk, inheriting relevant info
+                                                sub_payload = {
+                                                    "text": final_sub_chunks_texts[sub_j],
+                                                    "chunk_id": sub_chunk_ids_new[sub_j],
+                                                    "original_chunk_id": chunk_id,
+                                                    "sub_chunk_index": sub_j,
+                                                    "source_path": chunk.get("source_path", "unknown_source"),
+                                                    "source_id": chunk.get("source_id", "unknown_source_id"),
+                                                    "source_type": chunk.get("source_type", "unknown"),
+                                                    "metadata": chunk.get("metadata", {})
+                                                }
+                                                # Estimate token count for sub-chunk (optional, for payload)
+                                                sub_payload["token_count"] = len(final_sub_chunks_texts[sub_j].split()) 
+
+                                                # Generate point ID for sub-chunk
+                                                try:
+                                                    sub_point_id = str(uuid.uuid5(uuid.NAMESPACE_OID, sub_chunk_ids_new[sub_j]))
+                                                except Exception:
+                                                    sub_point_id = hashlib.md5(sub_chunk_ids_new[sub_j].encode('utf-8')).hexdigest()
+                                                
+                                                sub_points.append(models.PointStruct(
+                                                    id=sub_point_id,
+                                                    vector=sub_emb,
+                                                    payload=sub_payload
+                                                ))
+                                                sub_embedded_ids.add(sub_chunk_ids_new[sub_j])
+
+                                            # Add successfully embedded sub-points to the list for upserting
+                                            points_to_upsert_individual.extend(sub_points)
+                                            individually_embedded_ids.update(sub_embedded_ids)
+                                            logger.info(f"Successfully embedded {len(sub_points)} sub-chunks from multi-level emergency split of {chunk_id}.")
+
+                                        else:
+                                             logger.error(f"Mismatch embedding sub-chunks for {chunk_id} after multi-level emergency split.")
+                                    except Exception as sub_embed_err:
+                                        # Log error if embedding sub-chunks fails
+                                        logger.error(f"Failed to embed sub-chunks from multi-level emergency split for {chunk_id}: {sub_embed_err}", exc_info=True)
+                                
+                                except Exception as split_err:
+                                    logger.error(f"Failed during multi-level emergency splitting for chunk {chunk_id}: {split_err}", exc_info=True)
+                            else:
+                                # Other error during individual embedding
+                                logger.error(f"Error embedding chunk {chunk_id} individually: {individual_error_message}", exc_info=True)
+                                
+                    # After trying all chunks individually, upsert the ones that succeeded
+                    if points_to_upsert_individual:
+                        try:
+                            upsert_result_individual = self.client.upsert(
+                                collection_name=target_collection,
+                                points=points_to_upsert_individual,
+                                wait=True
+                            )
+                            logger.debug(f"Upsert result for individually processed chunks (from batch {i//batch_size}): {upsert_result_individual}")
+
+                            if upsert_result_individual.status == models.UpdateStatus.COMPLETED:
+                                for chunk_id in individually_embedded_ids:
+                                     # Check if it's a sub-chunk ID or original ID
+                                     if "_sub" in chunk_id:
+                                         # Mark sub-chunk as embedded (or handle as needed)
+                                         self.embedded_chunks[chunk_id] = True 
+                                     else:
+                                         self.embedded_chunks[chunk_id] = True
+                                self._save_state() # Save state after successful individual/sub-chunk upserts
+                            else:
+                                logger.error(f"Qdrant upsert failed for individually processed chunks (from batch {i//batch_size}). Status: {upsert_result_individual.status}")
+
+                        except Exception as upsert_individual_err:
+                            logger.error(f"Error during Qdrant upsert for individually processed chunks (from batch {i//batch_size}): {str(upsert_individual_err)}", exc_info=True)
+
+                else:
+                    # General error during batch embedding (not token limit)
+                    logger.error(f"Error processing batch starting at index {i}: {error_message}", exc_info=True)
+                    # Continue to the next batch
+                    continue # Skip state update etc. for this failed batch
+
+        # Final save after loop completes
         self._save_state()
-        logger.info(f"Successfully embedded and stored {len(chunks)} chunks in collection {target_collection}")
+        # Adjust final log message as it might overstate success if errors occurred
+        successful_count = len([status for status in self.embedded_chunks.values() if status])
+        logger.info(f"Embedding process finished. Collection '{target_collection}' now contains {successful_count} embedded chunks (including potentially re-chunked items).")
 
     @backoff.on_exception(backoff.expo,
                          (requests.exceptions.RequestException,
@@ -1220,7 +1407,7 @@ class ContentProcessor:
                 source_id = item.get("source_id", str(uuid.uuid4()))
                 
                 # Create semantic chunks
-                chunks = self._create_semantic_chunks(text, metadata)
+                chunks = self._create_semantic_chunks(text, metadata, item.get("source_path", "bulk_upload"))
                 
                 # Add source information
                 for i, chunk in enumerate(chunks):

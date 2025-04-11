@@ -122,47 +122,66 @@ class AdvancedRetriever:
 
             # Get collection info
             collection_info = self.client.get_collection(collection_name)
-            logger.debug(f"Collection info: vectors_count={collection_info.vectors_count}, points_count={collection_info.points_count}")
+            logger.debug(f"Collection '{collection_name}' info: {collection_info}")
 
-            if collection_info.vectors_count == 0:
-                logger.warning(f"Collection '{collection_name}' is empty (0 vectors)")
+            if collection_info.vectors_count == 0 and collection_info.points_count == 0:
+                logger.warning(f"Collection '{collection_name}' is empty (vectors_count=0, points_count=0)")
                 return False
 
             # Try to get a sample point to verify access
+            logger.debug(f"Attempting to scroll collection '{collection_name}' to retrieve sample points")
             try:
                 scroll_results = self.client.scroll(
                     collection_name=collection_name,
-                    limit=1,
+                    limit=5,
                     with_payload=True,
                     with_vectors=False
                 )
 
+                points = []
+                next_offset = None
+
                 # Handle different scroll_results formats
-                if isinstance(scroll_results, tuple):
+                if isinstance(scroll_results, tuple) and len(scroll_results) == 2:
                     # Direct tuple response (points, next_offset)
                     points = scroll_results[0]
+                    next_offset = scroll_results[1]
+                    logger.debug(f"Scroll returned tuple: {len(points)} points, next_offset={next_offset}")
                 elif hasattr(scroll_results, '__iter__'):
-                    # Iterator response (older API)
+                    # Iterator response (older API) - less likely now but good fallback
                     try:
-                        points, _ = next(scroll_results)
-                    except Exception:
-                        # If iterator fails, try treating as a tuple
-                        points = scroll_results[0] if len(scroll_results) > 0 else []
+                        first_batch = next(scroll_results)
+                        if isinstance(first_batch, tuple) and len(first_batch) == 2:
+                            points, next_offset = first_batch
+                            logger.debug(f"Scroll returned iterator: {len(points)} points in first batch, next_offset={next_offset}")
+                        else:
+                            # Assume it's just a list of points if not a tuple
+                            points = first_batch
+                            logger.debug(f"Scroll returned iterator: {len(points)} points in first batch (no offset info)")
+                    except StopIteration:
+                        logger.debug("Scroll returned empty iterator")
+                        points = []
+                    except Exception as iter_exc:
+                        logger.warning(f"Error processing scroll iterator: {iter_exc}")
+                        points = [] # Assume empty on error
                 else:
                     # Unknown format
                     logger.warning(f"Unknown scroll_results format: {type(scroll_results)}")
                     points = []
 
-                # Check if we got any results
+                # Check if we got any results and log them (first few IDs)
                 if not points:
-                    logger.warning(f"No points found in collection '{collection_name}'")
-                    return False
-
-                logger.debug(f"Successfully retrieved sample point from collection")
-                return True
+                    logger.warning(f"Scroll returned no points for collection '{collection_name}'")
+                    # Consider returning False here if scroll consistently fails for existing collections
+                    # For now, let's rely on the initial count check, but this is suspicious.
+                    return False # Let's be stricter: if scroll fails, assume not usable.
+                else:
+                    point_ids = [p.id for p in points[:5]] # Log first 5 IDs
+                    logger.info(f"Successfully retrieved {len(points)} sample point(s) from '{collection_name}'. IDs: {point_ids}")
+                    return True
 
             except Exception as e:
-                logger.error(f"Error retrieving sample point: {str(e)}")
+                logger.error(f"Error scrolling collection '{collection_name}': {str(e)}", exc_info=True)
                 return False
 
         except Exception as e:

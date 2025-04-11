@@ -373,6 +373,45 @@ async def process_documents(request: ProcessRequest, background_tasks: Backgroun
         logger.error(f"Error starting document processing: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/reset-state", response_model=ApiResponse)
+async def reset_state(
+    confirm: bool = Body(..., embed=True, description="Must confirm state reset"),
+    collection: Optional[str] = Body(None, embed=True, description="Optional collection name to reset state for (defaults to default collection)"),
+    api_key: str = Depends(get_api_key)
+):
+    """
+    Reset the processing state, clearing the list of processed files.
+
+    This is useful if processing failed and needs to be restarted.
+
+    Parameters:
+    - confirm: Must be true to perform the reset
+    - collection: Optional collection name to reset state for
+
+    Returns:
+    - success: Whether the reset was successful
+    - message: Confirmation message
+    """
+    start_time = time.time()
+
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Confirmation not provided. Set confirm=true to reset state.")
+
+    try:
+        processor, _ = get_api_components(collection)
+        processor.reset_processing_state(confirm=True) # Pass confirmation
+
+        duration_ms = (time.time() - start_time) * 1000
+        return ApiResponse(
+            success=True,
+            data={ "collection_reset": collection or processor.collection_name },
+            message="Processing state reset successfully.",
+            duration_ms=duration_ms
+        )
+    except Exception as e:
+        logger.error(f"Error resetting processing state: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/bulk/process", response_model=ApiResponse)
 async def process_bulk_data(request: BulkDataRequest, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
     """
@@ -1026,7 +1065,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='RAG Content Retriever API')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind the server to')
-    parser.add_argument('--port', type=int, default=8000, help='Port to bind the server to')
+    parser.add_argument('--port', type=int, default=8001, help='Port to bind the server to')
     parser.add_argument('--reload', action='store_true', help='Enable auto-reload for development')
     args = parser.parse_args()
 
