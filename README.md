@@ -1,200 +1,167 @@
-# RAG Content Retriever
+# Qdrant-DB RAG Content Retriever API
 
-A comprehensive tool for processing documents into vector embeddings and retrieving relevant content using advanced semantic search techniques optimized for building contextual books and documents.
+A FastAPI-based system for document ingestion, search, and retrieval using Qdrant as a vector database. Supports batch ingestion, query expansion, and collection management.
 
 ## Features
-
-- Process multiple document types (Markdown, JSON, JSONL, TXT, CSV, YAML)
-- Semantic chunking with optimal token boundaries
-- Advanced vector search with specialized retrieval strategies
-- Query expansion and reranking for improved retrieval
-- Support for document filtering and diverse source retrieval
-- Stateful processing with checkpoint support
-- Enhanced statistics and dashboard visualization
-- Docker support for easy deployment and scalability
-- RESTful API with robust authentication
-- **NEW**: Health monitoring endpoints for production deployment
-- **NEW**: Improved error handling and stability
-- **NEW**: Singleton connection management for better performance
-
-## Recent Improvements
-
-We've made several significant improvements to the codebase to enhance stability and performance:
-
-- **Connection Management**: Implemented a singleton pattern for Qdrant client to prevent multiple connections
-- **Error Handling**: Added robust error handling with detailed logs and backoff strategies
-- **Health Monitoring**: Added `/health`, `/readiness`, and `/liveness` endpoints for Kubernetes compatibility
-- **Qdrant Issue Detection**: Added capability to detect and clear Qdrant issues automatically
-- **Testing**: Enhanced test scripts for better error reporting and API validation
-- **Configuration**: Improved environment variable handling and validation
-
-See [IMPROVEMENTS.md](IMPROVEMENTS.md) for a complete list of recent enhancements.
-
-## Installation
-
-1. Clone this repository:
-```bash
-git clone https://github.com/yourusername/rag-content-retriever.git
-cd rag-content-retriever
-```
-
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-3. Set up API keys as environment variables:
-```bash
-export JINA_API_KEY=your_jina_key_here
-export GEMINI_API_KEY=your_gemini_key_here
-```
-
-4. Run the system with the provided configuration or create your own:
-```bash
-python main.py config --output config.yaml
-```
+- Batch document ingestion with progress tracking
+- Embedding and reranking support
+- Collection CRUD (create, list, get, delete)
+- Query expansion
+- Health and status endpoints
 
 ## Requirements
+- Python 3.8+
+- Qdrant running (local or remote)
+- Required environment variables in `.env` file (see `.env.example`)
+- Install dependencies: `pip install -r requirements.txt`
 
-- Python 3.9+
-- Jina AI API key ([Get one here](https://jina.ai/))
-- Google Gemini API key ([Get one here](https://ai.google.dev/))
-- Qdrant vector database (local or remote)
+## API Endpoints & Example Usage
 
-## Usage
-
-### Creating Configuration
-
-```bash
-# Create a default configuration file
-python main.py config --output config.yaml
-```
-
-### Processing Documents
+### 1. Health Check
+**GET** `/health`
 
 ```bash
-# Process documents in a directory
-python main.py process --path /path/to/documents --recursive
-
-# Process only specific file types
-python main.py process --path /path/to/documents --file-types .md .txt
+curl -X GET http://localhost:8001/health
 ```
 
-### Searching Content
+---
+
+### 2. Ingest Document
+**POST** `/process/`
+
+**Form-data parameters:**
+- `file`: (required) Document file to upload (`.txt`, `.md`, `.json`, `.csv`)
+- `collection_name`: (required) Name of the collection to ingest into
+- `metadata`: (optional) JSON string with extra metadata
+- `chunk_size`: (optional) Integer, chunk size in tokens (default: 1000)
+- `overlap_size`: (optional) Integer, overlap size in tokens (default: 100)
+
+**Example:**
+```bash
+curl -X POST http://localhost:8001/process/ \
+  -F "file=@sample.txt" \
+  -F "collection_name=my_collection" \
+  -F "metadata={\"source\":\"test\"}" \
+  -F "chunk_size=1000" \
+  -F "overlap_size=100"
+```
+
+---
+
+### 2b. Ingest All Files in a Directory
+**POST** `/process/directory/`
+
+**JSON body parameters:**
+- `directory_path`: (required) Path to the directory to recursively ingest from (server-side path)
+- `collection_name`: (required) Name of the collection to ingest into
+- `metadata`: (optional) Dictionary with extra metadata to attach to each file
+- `chunk_size`: (optional) Integer, chunk size in tokens (default: 1000)
+- `overlap_size`: (optional) Integer, overlap size in tokens (default: 100)
+
+**Example:**
+```bash
+curl -X POST http://localhost:8001/process/directory/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "directory_path": "/absolute/path/to/my_folder",
+    "collection_name": "my_collection",
+    "metadata": {"source": "batch"},
+    "chunk_size": 1000,
+    "overlap_size": 100
+  }'
+```
+
+Returns a summary of all processed files and any errors encountered.
+
+---
+
+### 3. Ingest Progress
+**GET** `/process/ingest-progress/{task_id}`
+
+**Example:**
+```bash
+curl -X GET http://localhost:8001/process/ingest-progress/<task_id>
+```
+
+---
+
+### 4. Search
+**POST** `/search/`
+
+**JSON body parameters:**
+- `query`: (required) Query string
+- `limit`: (optional) Max results (default: 10)
+- `use_expansion`: (optional) Boolean (default: true)
+- `collection_name`: (optional) Collection to search (default: `content_library`)
+- `expansion_model`: (optional) Which expansion model to use
+
+**Example:**
+```bash
+curl -X POST http://localhost:8001/search/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is Qdrant?",
+    "limit": 5,
+    "use_expansion": true,
+    "collection_name": "my_collection",
+    "expansion_model": "openai"
+  }'
+```
+
+---
+
+### 5. List Collections
+**GET** `/collections/`
 
 ```bash
-# Search for specific content
-python main.py search --query "Your search query here"
-
-# Use simple search (without optimizations)
-python main.py search --query "Your search query" --simple
-
-# Limit results
-python main.py search --query "Your search query" --limit 10
-
-# Filter results
-python main.py search --query "Your search query" --filter "source_type=.md" "keyword=important"
-
-# Save results to file
-python main.py search --query "Your search query" --output results.json
+curl -X GET http://localhost:8001/collections/
 ```
 
-### REST API
+---
 
-The system includes a FastAPI-based REST API for integration with other services:
+### 6. Create Collection
+**POST** `/collections/`
+
+**JSON body parameters:**
+- `collection_name`: (required) Name of the collection
+- `vector_size`: (optional) Integer, vector dimension (default: 1024)
+- `distance`: (optional) String, distance metric (`cosine`, `euclid`, etc.; default: `cosine`)
+
+**Example:**
+```bash
+curl -X POST http://localhost:8001/collections/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection_name": "my_collection",
+    "vector_size": 1024,
+    "distance": "cosine"
+  }'
+```
+
+---
+
+### 7. Get Collection Info
+**GET** `/collections/{collection_name}`
 
 ```bash
-# Start the API server
-python api.py 
-
-# Or with custom host/port
-python api.py --host 0.0.0.0 --port 8080
+curl -X GET http://localhost:8001/collections/my_collection
 ```
 
-See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
+---
 
-### System Statistics and Monitoring
+### 8. Delete Collection
+**DELETE** `/collections/{collection_name}`
 
 ```bash
-# Show database statistics
-python main.py stats
-
-# Test API connections and check Qdrant issues
-python main.py test --verbose
-
-# Test local API endpoints
-python tests/test_local_api.py
-
-# Test search functionality
-python specific_search.py "your search query"
-
-# Show detailed stats with visualization
-python test_enhanced_stats.py
-
-# Run the comprehensive dashboard view
-python simple_dashboard_test.py
-
-# Clear database (requires confirmation)
-python main.py clear --confirm
-
-# Reset processing state to reprocess all files
-python main.py reset --confirm
+curl -X DELETE http://localhost:8001/collections/my_collection
 ```
 
-### Health Monitoring
+---
 
-The API now includes dedicated health check endpoints for production monitoring:
-
-```bash
-# Check API health (includes Qdrant status)
-curl http://localhost:8000/health
-
-# Kubernetes readiness probe
-curl http://localhost:8000/readiness
-
-# Kubernetes liveness probe
-curl http://localhost:8000/liveness
-```
-
-### Docker Deployment
-
-The system can be deployed using Docker for easier management:
-
-```bash
-# Build the Docker image
-docker build -t rag-content-retriever .
-
-# Run the container
-docker run -p 8000:8000 -v /path/to/data:/app/data -v /path/to/.env:/app/.env rag-content-retriever
-
-# Run with Docker Compose (recommended for production)
-docker-compose up -d
-```
-
-## How It Works
-
-This tool implements advanced retrieval techniques based on research on embedding model limitations, including:
-
-1. Semantic chunking within optimal token boundaries (1000 tokens)
-2. Overlap between chunks to preserve context
-3. Query expansion for better recall
-4. Hybrid search with multi-query and specialized token handling
-5. Diverse source retrieval to ensure comprehensive coverage
-6. Reranking for improved result relevance
-
-## Advanced Options
-
-You can override configuration options via command line:
-
-```bash
-python main.py search --query "Your search" --jina-key YOUR_KEY --qdrant-url custom-url --qdrant-port 6334
-```
-
-For detailed logging:
-```bash
-python main.py --log-details process --path /path/to/docs
-```
+## Notes
+- All endpoints return JSON responses.
+- For authentication, set required API keys in your `.env` file as needed.
+- For more advanced usage, see the code and expand as needed.
 
 ## License
-
 MIT

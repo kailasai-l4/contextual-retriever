@@ -13,6 +13,12 @@ services:
     environment:
       - QDRANT_URL=qdrant
       - QDRANT_PORT=6333
+      - EMBEDDING_JINA_MODEL=jina-embeddings-v3
+      - EMBEDDING_OPENAI_MODEL=text-embedding-3-small
+      - EXPANSION_GEMINI_MODEL=gemini-1.5-flash
+      - EXPANSION_OPENAI_MODEL=gpt-4.1-nano
+      - DEFAULT_EMBEDDING_PROVIDER=jina
+      - DEFAULT_EXPANSION_PROVIDER=openai
     depends_on:
       - qdrant
     restart: unless-stopped

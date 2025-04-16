@@ -27,11 +27,17 @@ RUN chmod +x *.py
 
 # Default environment variables (will be overridden by docker-compose)
 ENV QDRANT_URL="qdrant" \
-    QDRANT_PORT=6333
+    QDRANT_PORT=6333 \
+    EMBEDDING_JINA_MODEL=jina-embeddings-v3 \
+    EMBEDDING_OPENAI_MODEL=text-embedding-3-small \
+    EXPANSION_GEMINI_MODEL=gemini-1.5-flash \
+    EXPANSION_OPENAI_MODEL=gpt-4.1-nano \
+    DEFAULT_EMBEDDING_PROVIDER=jina \
+    DEFAULT_EXPANSION_PROVIDER=openai
 
 # Health check
 HEALTHCHECK --interval=86400s --timeout=10s --start-period=30s --retries=3 \
-  CMD curl -f -H "X-API-Key: ${API_KEY}" http://localhost:8000/ || exit 1
+  CMD curl -f http://localhost:8000/ || exit 1
 
 # Run the API server
 CMD ["python", "api.py", "--host", "0.0.0.0", "--port", "8000"]
