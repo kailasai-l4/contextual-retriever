@@ -14,7 +14,8 @@ RUN apt-get update && \
 
 # Install dependencies first for better caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install uv
+RUN uv pip install --no-cache-dir -r requirements.txt
 
 # Create necessary directories
 RUN mkdir -p /app/data /app/uploads /app/embedding_checkpoints /app/logs
@@ -40,7 +41,7 @@ HEALTHCHECK --interval=86400s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:8000/ || exit 1
 
 # Run the API server
-CMD ["python", "api.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "api/main.py", "--host", "0.0.0.0", "--port", "8000"]
 
 # Expose port
 EXPOSE 8000
