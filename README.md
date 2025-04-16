@@ -46,32 +46,7 @@ curl -X POST http://localhost:8001/process/ \
   -F "overlap_size=100"
 ```
 
----
-
-### 2b. Ingest All Files in a Directory
-**POST** `/process/directory/`
-
-**JSON body parameters:**
-- `directory_path`: (required) Path to the directory to recursively ingest from (server-side path)
-- `collection_name`: (required) Name of the collection to ingest into
-- `metadata`: (optional) Dictionary with extra metadata to attach to each file
-- `chunk_size`: (optional) Integer, chunk size in tokens (default: 1000)
-- `overlap_size`: (optional) Integer, overlap size in tokens (default: 100)
-
-**Example:**
-```bash
-curl -X POST http://localhost:8001/process/directory/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "directory_path": "/absolute/path/to/my_folder",
-    "collection_name": "my_collection",
-    "metadata": {"source": "batch"},
-    "chunk_size": 1000,
-    "overlap_size": 100
-  }'
-```
-
-Returns a summary of all processed files and any errors encountered.
+**Note:** Only single file uploads are supported by the API. For bulk ingestion, you can loop over this endpoint in a script to ingest multiple files.
 
 ---
 

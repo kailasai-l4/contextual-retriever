@@ -1,40 +1,59 @@
+# Define services to be run in the Docker environment
 services:
+  # API service
   api:
+    # Build the API image from the Dockerfile in this directory
     build: .
+    # Map host port 8333 to container port 8000
     ports:
       - "8333:8000"
+    # Persist data, uploads, embedding checkpoints, and logs
     volumes:
-      - ./data:/app/data
-      - ./uploads:/app/uploads
-      - ./embedding_checkpoints:/app/embedding_checkpoints
-      - ./logs:/app/logs
+      - ./data:/app/data  # Persist data
+      - ./uploads:/app/uploads  # Persist uploads
+      - ./embedding_checkpoints:/app/embedding_checkpoints  # Persist embedding checkpoints
+      - ./logs:/app/logs  # Persist logs
+    # Load environment variables from .env file
     env_file:
       - .env
+    # Set environment variables for the API service
     environment:
-      - QDRANT_URL=qdrant
-      - QDRANT_PORT=6333
-      - EMBEDDING_JINA_MODEL=jina-embeddings-v3
-      - EMBEDDING_OPENAI_MODEL=text-embedding-3-small
-      - EXPANSION_GEMINI_MODEL=gemini-1.5-flash
-      - EXPANSION_OPENAI_MODEL=gpt-4.1-nano
-      - DEFAULT_EMBEDDING_PROVIDER=jina
-      - DEFAULT_EXPANSION_PROVIDER=openai
+      - QDRANT_URL=qdrant  # Qdrant URL
+      - QDRANT_PORT=6333  # Qdrant port
+      - EMBEDDING_JINA_MODEL=jina-embeddings-v3  # Jina embedding model
+      - EMBEDDING_OPENAI_MODEL=text-embedding-3-small  # OpenAI embedding model
+      # - EXPANSION_GEMINI_MODEL=gemini-1.5-flash  # Gemini expansion model (uncomment if needed)
+      - EXPANSION_OPENAI_MODEL=gpt-4.1-nano  # OpenAI expansion model
+      - DEFAULT_EMBEDDING_PROVIDER=jina  # Default embedding provider
+      - DEFAULT_EXPANSION_PROVIDER=openai  # Default expansion provider
+    # Wait for Qdrant service to be ready
     depends_on:
       - qdrant
+    # Restart policy for the API service
     restart: unless-stopped
+    # Network for the API service
     networks:
       - rag-network
 
+  # Qdrant service
   qdrant:
+    # Use official Qdrant image
     image: qdrant/qdrant
+    # Expose Qdrant API
     ports:
       - "6333:6333"
+    # Persist Qdrant data
     volumes:
       - ./qdrant_data:/qdrant/storage
+    # Restart policy for the Qdrant service
     restart: unless-stopped
+    # Network for the Qdrant service
     networks:
       - rag-network
 
+# Define networks for service communication
 networks:
+  # rag-network
   rag-network:
+    # Use bridge network for service communication
     driver: bridge
