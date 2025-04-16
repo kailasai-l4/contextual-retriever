@@ -40,7 +40,7 @@ HEALTHCHECK --interval=86400s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:8000/ || exit 1
 
 # Run the API server
-CMD ["python", "api/main.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # Expose port
 EXPOSE 8000
