@@ -14,8 +14,7 @@ RUN apt-get update && \
 
 # Install dependencies first for better caching
 COPY requirements.txt .
-RUN pip install uv
-RUN uv pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Create necessary directories
 RUN mkdir -p /app/data /app/uploads /app/embedding_checkpoints /app/logs
