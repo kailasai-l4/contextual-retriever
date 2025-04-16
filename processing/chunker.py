@@ -4,25 +4,24 @@ class Chunker:
         self.overlap_tokens = overlap_tokens
 
     def chunk(self, text, metadata=None):
-        # Simple chunking: split by paragraphs, fallback to lines if needed
+        # Token-based chunking with overlap
+        words = text.split()
+        total_tokens = len(words)
         chunks = []
-        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-        for i, para in enumerate(paragraphs):
+        start = 0
+        chunk_index = 0
+        while start < total_tokens:
+            end = min(start + self.max_tokens, total_tokens)
+            chunk_words = words[start:end]
+            chunk_text = ' '.join(chunk_words)
             chunk_meta = dict(metadata or {})
-            chunk_meta["chunk_index"] = i
+            chunk_meta["chunk_index"] = chunk_index
             chunks.append({
-                "text": para,
+                "text": chunk_text,
                 "metadata": chunk_meta
             })
-        if not chunks:
-            # fallback: split by lines
-            lines = text.splitlines()
-            for i, line in enumerate(lines):
-                if line.strip():
-                    chunk_meta = dict(metadata or {})
-                    chunk_meta["chunk_index"] = i
-                    chunks.append({
-                        "text": line.strip(),
-                        "metadata": chunk_meta
-                    })
+            if end == total_tokens:
+                break
+            start = end - self.overlap_tokens if self.overlap_tokens > 0 else end
+            chunk_index += 1
         return chunks

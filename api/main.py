@@ -36,6 +36,7 @@ app.add_middleware(
 @app.on_event("startup")
 def startup_event():
     config = Config.from_env()
+    logger.info(f"Loaded config: default_expansion_provider={config.default_expansion_provider}")
     app.state.config = config
     app.state.embedding_provider = get_embedding_provider(config)
     app.state.expansion_provider = get_expansion_provider(config)
@@ -43,7 +44,7 @@ def startup_event():
     # Initialize Qdrant client and manager
     qdrant_url = config.qdrant.url
     qdrant_port = config.qdrant.port
-    qdrant_client = QdrantClient(host=qdrant_url, port=qdrant_port)
+    qdrant_client = QdrantClient(host=qdrant_url, port=qdrant_port, timeout=120)
     app.state.qdrant_manager = QdrantManager(qdrant_client)
     logger.info("API startup: config, providers, and Qdrant manager loaded.")
 
