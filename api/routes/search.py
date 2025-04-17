@@ -16,6 +16,7 @@ class SearchRequest(BaseModel):
     use_expansion: Optional[bool] = True
     collection_name: Optional[str] = "content_library"
     expansion_model: Optional[str] = None
+    filter: Optional[dict] = None
 
 class SearchResult(BaseModel):
     text: str
@@ -55,11 +56,14 @@ async def search_endpoint(request: Request, body: SearchRequest):
             reranker_provider=reranker_provider,
             storage_manager=qdrant_manager
         )
+        # Build filter for retriever
+        retriever_filter = body.filter if body.filter else None
         results = retriever.search(
             query=search_query,
             limit=body.limit,
             use_expansion=False,  # expansion already applied
-            collection_name=body.collection_name
+            collection_name=body.collection_name,
+            filter=retriever_filter
         )
         if isinstance(results, dict) and "error" in results:
             raise HTTPException(status_code=500, detail=results["error"])

@@ -3,8 +3,8 @@ import requests
 import time
 from tqdm import tqdm
 
-API_URL = "http://localhost:8001/process/"
-PROGRESS_URL = "http://localhost:8001/process/ingest-progress/"
+API_URL = "http://localhost:8000/process/"
+PROGRESS_URL = "http://localhost:8000/process/ingest-progress/"
 SUPPORTED_EXTENSIONS = {".md", ".txt", ".csv", ".json"}
 
 def find_files(directory):

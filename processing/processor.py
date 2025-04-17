@@ -40,6 +40,9 @@ class Processor:
                     "text": chunk["text"],
                     "metadata": chunk_meta
                 }
+                # Add filename at top-level for Qdrant filtering
+                if "filename" in chunk_meta:
+                    payload["filename"] = chunk_meta["filename"]
                 points.append({
                     "id": point_id,
                     "vector": vector,

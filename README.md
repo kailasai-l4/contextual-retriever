@@ -21,7 +21,7 @@ A FastAPI-based system for document ingestion, search, and retrieval using Qdran
 **GET** `/health`
 
 ```bash
-curl -X GET http://localhost:8001/health
+curl -X GET http://localhost:8000/health
 ```
 
 ---
@@ -38,7 +38,7 @@ curl -X GET http://localhost:8001/health
 
 **Example:**
 ```bash
-curl -X POST http://localhost:8001/process/ \
+curl -X POST http://localhost:8000/process/ \
   -F "file=@sample.txt" \
   -F "collection_name=my_collection" \
   -F "metadata={\"source\":\"test\"}" \
@@ -55,7 +55,7 @@ curl -X POST http://localhost:8001/process/ \
 
 **Example:**
 ```bash
-curl -X GET http://localhost:8001/process/ingest-progress/<task_id>
+curl -X GET http://localhost:8000/process/ingest-progress/<task_id>
 ```
 
 ---
@@ -67,10 +67,58 @@ curl -X GET http://localhost:8001/process/ingest-progress/<task_id>
 - `query`: (required) Query string
 - `limit`: (optional) Max results (default: 10)
 - `use_expansion`: (optional) Boolean (default: true)
-- `collection_name`: (optional) Collection to search (default: `content_library`)
+- `collection_name`: (optional) Collection to search
 - `expansion_model`: (optional) Which expansion model to use
+- `filter`: (optional) Filter object (see below)
+
+**Filter Object:**
+- `must`: (optional) List of filter conditions (see below)
+
+**Filter Condition:**
+- `key`: (required) Field to filter on
+- `match`: (required) Match object (see below)
+
+**Match Object:**
+- `value`: (optional) Value to match
+- `any`: (optional) List of values to match any of
 
 **Example:**
+```bash
+curl -X POST http://localhost:8000/search/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is Qdrant?",
+    "limit": 5,
+    "use_expansion": true,
+    "collection_name": "my_collection",
+    "expansion_model": "openai",
+    "filter": {
+      "must": [
+        { "key": "filename", "match": { "value": "A Garland of Memories - Devotees' Reminiscences of Time Spent With Swamiji_English_processed (1).md" } }
+      ]
+    }
+  }'
+```
+
+**Example with `source_path`:**
+```bash
+curl -X POST http://localhost:8000/search/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is Qdrant?",
+    "limit": 5,
+    "use_expansion": true,
+    "collection_name": "my_collection",
+    "expansion_model": "openai",
+    "filter": {
+      "must": [
+        { "key": "source_path", "match": { "value": "uploads/uploads/uploads copy/A Garland of Memories - Devotees' Reminiscences of Time Spent With Swamiji_English_processed (1).md" } }
+      ]
+    }
+  }'
+```
+
+**Example with `any` syntax:**
 ```bash
 curl -X POST http://localhost:8001/search/ \
   -H "Content-Type: application/json" \
@@ -79,7 +127,12 @@ curl -X POST http://localhost:8001/search/ \
     "limit": 5,
     "use_expansion": true,
     "collection_name": "my_collection",
-    "expansion_model": "openai"
+    "expansion_model": "openai",
+    "filter": {
+      "must": [
+        { "key": "filename", "match": { "any": ["file1.md", "file2.md"] } }
+      ]
+    }
   }'
 ```
 
@@ -104,7 +157,7 @@ curl -X GET http://localhost:8001/collections/
 
 **Example:**
 ```bash
-curl -X POST http://localhost:8001/collections/ \
+curl -X POST http://localhost:8000/collections/ \
   -H "Content-Type: application/json" \
   -d '{
     "collection_name": "my_collection",
@@ -130,6 +183,81 @@ curl -X GET http://localhost:8001/collections/my_collection
 ```bash
 curl -X DELETE http://localhost:8001/collections/my_collection
 ```
+
+---
+
+## 🔎 Filtering Search Results by Document
+
+You can filter search results to only include results from a specific file (by filename or source_path) or any payload field.
+
+Depending on your ingestion logic, the `filename` may be present as a top-level field or nested inside `metadata`.
+
+### 1. Filter by Top-Level `filename` (Recommended)
+If your data was ingested after April 2025, or you have re-ingested with the latest code, `filename` is included as a top-level field in the payload. Use:
+
+```json
+"filter": {
+  "must": [
+    { "key": "filename", "match": { "value": "A Garland of Memories - Devotees' Reminiscences of Time Spent With Swamiji_English_processed (1).md" } }
+  ]
+}
+```
+
+### 2. Filter by Nested `metadata.filename`
+If your data was ingested before this update, or you want to support both cases, use:
+
+```json
+"filter": {
+  "must": [
+    { "key": "metadata.filename", "match": { "value": "A Garland of Memories - Devotees' Reminiscences of Time Spent With Swamiji_English_processed (1).md" } }
+  ]
+}
+```
+
+**Note:**
+- If you re-ingest documents after updating your code, both fields will be present and both filter methods will work.
+- For best results and future compatibility, prefer the top-level `filename` approach.
+
+#### Ingestion Logic for Top-Level `filename`
+When ingesting documents, the code ensures `filename` is included at the top level of the Qdrant payload:
+
+```python
+payload = {
+    "text": chunk["text"],
+    "metadata": chunk_meta
+}
+if "filename" in chunk_meta:
+    payload["filename"] = chunk_meta["filename"]
+```
+
+For more details, see [Qdrant’s filter documentation](https://qdrant.tech/documentation/concepts/filtering/).
+
+---
+
+### 🔍 Filter Syntax: What Does `must` Mean?
+
+In the filter object, the `must` field specifies a list of conditions that **all must be satisfied** for a result to match (logical AND). This is based on Qdrant's boolean filtering logic.
+
+- **`must`**: All conditions must be true (AND logic)
+- **`should`**: At least one should be true (OR logic)
+- **`must_not`**: None should be true (NOT logic)
+
+#### Example: Multiple `must` Conditions
+
+```json
+"filter": {
+  "must": [
+    { "key": "filename", "match": { "value": "file1.md" } },
+    { "key": "source", "match": { "value": "test" } }
+  ]
+}
+```
+This will only return results where **both** `filename` is `file1.md` **AND** `source` is `test`.
+
+See [Qdrant filtering documentation](https://qdrant.tech/documentation/concepts/filtering/) for more advanced options.
+
+## 🧪 Testing
+- Add tests for the new filter functionality in your search endpoint to ensure correct results.
 
 ---
 

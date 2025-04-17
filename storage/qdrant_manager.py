@@ -31,14 +31,15 @@ class QdrantManager:
         ]
         self.client.upsert(collection_name=collection_name, points=qdrant_points)
 
-    def search(self, collection_name, query_vector, limit=10, score_threshold=0.5):
+    def search(self, collection_name, query_vector, limit=10, score_threshold=0.5, filter=None):
         # Minimal implementation for end-to-end test
         # Uses the qdrant-client to search for similar vectors
         search_result = self.client.search(
             collection_name=collection_name,
             query_vector=query_vector,
             limit=limit,
-            score_threshold=score_threshold
+            score_threshold=score_threshold,
+            query_filter=filter  # Pass Qdrant filter as query_filter
         )
         # Flatten payload to match API response model
         results = []

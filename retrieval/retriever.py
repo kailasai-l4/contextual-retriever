@@ -4,7 +4,7 @@ class Retriever:
         self.reranker_provider = reranker_provider
         self.storage_manager = storage_manager
 
-    def search(self, query, limit=10, use_expansion=True, collection_name="content_library"):
+    def search(self, query, limit=10, use_expansion=True, collection_name="content_library", filter=None):
         import logging
         logger = logging.getLogger("Retriever")
         try:
@@ -14,7 +14,8 @@ class Retriever:
             results = self.storage_manager.search(
                 collection_name=collection_name,
                 query_vector=query_vector,
-                limit=limit
+                limit=limit,
+                filter=filter
             )
             logger.info(f"Search results: {results}")
             # Return results as a list of dicts (for API response)
