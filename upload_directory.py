@@ -1,3 +1,7 @@
+# HARDCODED API KEY (for one-off/batch use only; do not commit to public repos)
+API_KEY = "your_secret_key"
+HEADERS = {"X-API-Key": API_KEY}
+
 import os
 import requests
 import time
@@ -21,7 +25,7 @@ def upload_file(filepath, collection_name):
     with open(filepath, "rb") as f:
         files = {"file": (os.path.basename(filepath), f)}
         data = {"collection_name": collection_name}
-        response = requests.post(API_URL, files=files, data=data)
+        response = requests.post(API_URL, files=files, data=data, headers=HEADERS)
         if response.status_code == 200:
             resp_json = response.json()
             task_id = resp_json.get("task_id")
@@ -32,7 +36,7 @@ def upload_file(filepath, collection_name):
 
 def poll_progress(task_id):
     for _ in range(20):  # Wait up to 20 seconds per file
-        resp = requests.get(PROGRESS_URL + task_id)
+        resp = requests.get(PROGRESS_URL + task_id, headers=HEADERS)
         if resp.status_code == 200:
             prog = resp.json()
             if prog.get("done"):
