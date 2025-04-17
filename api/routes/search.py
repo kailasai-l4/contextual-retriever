@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
+from api.api_key_auth import verify_api_key
 
 # Import Retriever from retrieval
 from retrieval.retriever import Retriever
@@ -35,6 +36,7 @@ class SearchResponse(BaseModel):
 
 @router.post("/", response_model=SearchResponse)
 async def search_endpoint(request: Request, body: SearchRequest):
+    await verify_api_key(request)
     try:
         config = request.app.state.config
         embedding_provider = request.app.state.embedding_provider

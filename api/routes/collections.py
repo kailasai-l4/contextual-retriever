@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 import logging
+from api.api_key_auth import verify_api_key
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 logger = logging.getLogger("api.collections")
@@ -13,6 +14,7 @@ class CreateCollectionRequest(BaseModel):
 
 @router.post("/", status_code=201)
 async def create_collection(request: Request, body: CreateCollectionRequest):
+    await verify_api_key(request)
     qdrant_manager = request.app.state.qdrant_manager
     try:
         qdrant_manager.create_collection(
@@ -27,6 +29,7 @@ async def create_collection(request: Request, body: CreateCollectionRequest):
 
 @router.get("/")
 async def list_collections(request: Request):
+    await verify_api_key(request)
     qdrant_manager = request.app.state.qdrant_manager
     try:
         collections = qdrant_manager.list_collections()
@@ -37,6 +40,7 @@ async def list_collections(request: Request):
 
 @router.get("/{collection_name}")
 async def get_collection(request: Request, collection_name: str):
+    await verify_api_key(request)
     qdrant_manager = request.app.state.qdrant_manager
     try:
         info = qdrant_manager.get_collection(collection_name)
@@ -47,6 +51,7 @@ async def get_collection(request: Request, collection_name: str):
 
 @router.delete("/{collection_name}")
 async def delete_collection(request: Request, collection_name: str):
+    await verify_api_key(request)
     qdrant_manager = request.app.state.qdrant_manager
     try:
         qdrant_manager.delete_collection(collection_name)

@@ -11,6 +11,7 @@ import uuid
 
 from processing.chunker import Chunker
 from processing.processor import Processor
+from api.api_key_auth import verify_api_key
 
 router = APIRouter(prefix="/process", tags=["process"])
 logger = logging.getLogger("api.process")
@@ -58,6 +59,7 @@ async def process_file(
     chunk_size: Optional[int] = Form(1000),
     overlap_size: Optional[int] = Form(100)
 ):
+    await verify_api_key(request)
     try:
         text, filename = read_file_content(file)
         meta = json.loads(metadata) if metadata else {}
@@ -99,7 +101,8 @@ async def process_file(
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
 @router.get("/ingest-progress/{task_id}")
-async def ingest_progress(task_id: str):
+async def ingest_progress(task_id: str, request: Request):
+    await verify_api_key(request)
     with store_lock:
         progress = ingest_progress_store.get(task_id)
         if not progress:
